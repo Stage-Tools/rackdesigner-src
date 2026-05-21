@@ -57,7 +57,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='RackDesigner_v0.1.17',
+    name='RackDesigner_v0.1.18',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

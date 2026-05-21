@@ -48,8 +48,8 @@ def ghost_push(text, danger=False, small=False, amber=False):
         color, hover_bg, hover_color = ACCENT, "#1a1200", ACCENT
         border = "#2a1e00"
     elif danger:
-        color, hover_bg, hover_color = "#7a3030", "#1e0f0f", "#cc4444"
-        border = "#2a1515"
+        color, hover_bg, hover_color = "#cc4444", "#1e0f0f", "#e05555"
+        border = "#3a1515"
     else:
         color, hover_bg, hover_color = TEXT_MUTED, BG4, TEXT_SECONDARY
         border = BG4
@@ -69,7 +69,7 @@ def ghost_push(text, danger=False, small=False, amber=False):
 
 def sidebar_label(text):
     l = QLabel(text)
-    l.setStyleSheet(f"color:{BG4}; font-size:9px; font-weight:700; letter-spacing:1.5px; padding:10px 12px 4px;")
+    l.setStyleSheet(f"color:#606060; font-size:9px; font-weight:700; letter-spacing:1.5px; padding:10px 12px 4px;")
     return l
 
 
@@ -162,7 +162,7 @@ class NavBar(QWidget):
         self.save_btn.setStyleSheet(f"""
             QPushButton {{
                 background:transparent; color:{TEXT_MUTED};
-                border:1px solid #2a2a2a; border-radius:3px;
+                border:1px solid #444; border-radius:3px;
                 font-size:9px; font-weight:700; letter-spacing:1px;
             }}
             QPushButton:hover {{ color:{ACCENT}; border-color:{ACCENT}; }}
@@ -180,11 +180,11 @@ class NavBar(QWidget):
                 font-size:10px; font-weight:700; letter-spacing:1.5px; padding:0 18px;
             }}"""
         return f"""QPushButton {{
-                background:transparent; color:#333;
+                background:transparent; color:#707070;
                 border:none; border-bottom:2px solid transparent;
                 font-size:10px; font-weight:700; letter-spacing:1.5px; padding:0 18px;
             }}
-            QPushButton:hover {{ color:#666; border-bottom:2px solid #222; }}"""
+            QPushButton:hover {{ color:#a8a8a0; border-bottom:2px solid #444; }}"""
 
     def _select(self, idx):
         for i, btn in enumerate(self._btns):
@@ -518,6 +518,7 @@ class DesignerSection(QWidget):
         super().__init__(parent)
         self.project = Project()
         self._canvases: list[RackCanvas] = []
+        self._active_canvas: RackCanvas = None
         self.library: list[DeviceDefinition] = storage.load_library()
         self._build()
         self._refresh()
@@ -560,11 +561,11 @@ class DesignerSection(QWidget):
                     font-size:9px; font-weight:700; letter-spacing:1.5px; padding:0;
                 }}"""
             return f"""QPushButton {{
-                background:#1a1a1a; color:#444;
+                background:#1a1a1a; color:#707070;
                 border:none; border-bottom:2px solid transparent;
                 font-size:9px; font-weight:700; letter-spacing:1.5px; padding:0;
             }}
-            QPushButton:hover {{ color:#777; }}"""
+            QPushButton:hover {{ color:#a8a8a0; }}"""
 
         self._tab_racks_btn = QPushButton("RACKS")
         self._tab_lib_btn   = QPushButton("LIBRARY")
@@ -779,7 +780,7 @@ class DesignerSection(QWidget):
         spin_layout.addWidget(btn_col)
 
         u_lbl = QLabel("U")
-        u_lbl.setStyleSheet(f"color:#333; font-size:9px; padding-left:2px;")
+        u_lbl.setStyleSheet(f"color:#606060; font-size:9px; padding-left:2px;")
         cr.addWidget(self.custom_name)
         cr.addWidget(spin_w)
         cr.addWidget(u_lbl)
@@ -844,6 +845,7 @@ class DesignerSection(QWidget):
             canvas.slot_removed.connect(self._on_changed)
             canvas.slot_moved.connect(self._on_changed)
             canvas.slot_selected.connect(self._on_slot_selected)
+            canvas.became_active.connect(self._on_canvas_active)
 
             wrapper = QWidget()
             wrapper.setStyleSheet(f"background:#181818;")
@@ -910,6 +912,13 @@ class DesignerSection(QWidget):
         if watts > 0:
             s += f"  ·  {watts:.0f}W total"
         self.info_lbl.setText(s)
+
+    def _on_canvas_active(self, canvas: RackCanvas):
+        self._active_canvas = canvas
+
+    def undo(self):
+        if self._active_canvas is not None:
+            self._active_canvas.undo()
 
     def reload_library(self):
         self.library = storage.load_library()
@@ -1160,7 +1169,7 @@ class ExportSection(QWidget):
         self.export_btn = ghost_push("EXPORT PDF", amber=True)
         self.export_btn.clicked.connect(self._do_export)
         self.summary_lbl = QLabel("")
-        self.summary_lbl.setStyleSheet("color:#444; font-size:10px;")
+        self.summary_lbl.setStyleSheet("color:#707070; font-size:10px;")
         fl.addWidget(self.export_btn)
         fl.addWidget(self.summary_lbl)
         fl.addStretch()
@@ -1684,7 +1693,7 @@ class AboutSection(QWidget):
         product.setStyleSheet(f"color:{TEXT_PRIMARY}; letter-spacing:5px;")
         cl.addWidget(product)
 
-        ver = QLabel("v0.1.17")
+        ver = QLabel("v0.1.18")
         ver.setStyleSheet(f"color:#505050; font-size:12px; letter-spacing:1px; margin-top:6px;")
         cl.addWidget(ver)
 
@@ -2069,11 +2078,17 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self._save)
         QShortcut(QKeySequence("Ctrl+O"), self).activated.connect(self.proj_section._open)
         QShortcut(QKeySequence("Ctrl+N"), self).activated.connect(self.proj_section._new)
+        QShortcut(QKeySequence("Ctrl+Z"), self).activated.connect(self._undo)
+
+    def _undo(self):
+        """Delega l'undo al designer solo se è la sezione attiva."""
+        if self.stack.currentWidget() is self.designer:
+            self.designer.undo()
 
     def _build_status(self):
         self._status = QStatusBar()
         self.setStatusBar(self._status)
-        self._status.showMessage("Ready  —  Rack Designer v0.1.17  ·  Stage Tools")
+        self._status.showMessage("Ready  —  Rack Designer v0.1.18  ·  Stage Tools")
 
     def _switch(self, idx):
         self.stack.setCurrentIndex(idx)

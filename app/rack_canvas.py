@@ -1,3 +1,6 @@
+import copy
+from collections import deque
+
 from PyQt6.QtWidgets import (
     QWidget, QMenu, QDialog, QTextEdit,
     QDialogButtonBox, QVBoxLayout, QLabel
@@ -9,15 +12,16 @@ from app.style import ACCENT, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED
 from app.dialogs import MsgBox
 
 # Layout constants
-SLOT_H  = 30    # pixels per U
-LABEL_W = 40    # width of U-number column
-BAY_W   = 460   # width of each bay
-BAY_SEP = 8     # separator between bays
+SLOT_H  = 30
+LABEL_W = 40
+BAY_W   = 460
+BAY_SEP = 8
 
-# Typography rendering constants
 NAME_FONT_SIZE = 9
 CAT_FONT_SIZE  = 7
 U_FONT_SIZE    = 7
+
+UNDO_LIMIT = 10
 
 
 class SlotNoteDialog(QDialog):
@@ -40,40 +44,68 @@ class SlotNoteDialog(QDialog):
 
 
 class RackCanvas(QWidget):
-    slot_removed = pyqtSignal()
-    slot_moved   = pyqtSignal()
-    slot_selected = pyqtSignal(object)   # emits RackSlot or None
+    slot_removed  = pyqtSignal()
+    slot_moved    = pyqtSignal()
+    slot_selected = pyqtSignal(object)
+    became_active = pyqtSignal(object)   # emette self quando diventa canvas attivo
+
+    # Clipboard condivisa tra tutte le istanze
+    _clipboard = None
 
     def __init__(self, rack: Rack, parent=None):
         super().__init__(parent)
         self.rack = rack
-        self._drag_slot   = None
-        self._drag_offset = 0
-        self._hover_bay   = -1
+        self._drag_slot     = None
+        self._drag_offset   = 0
+        self._drag_moved    = False
+        self._hover_bay     = -1
         self._selected_slot = None
-        self._hover_u     = -1
+        self._hover_u       = -1
+
+        self._undo_stack: deque = deque(maxlen=UNDO_LIMIT)
+
         self.setAcceptDrops(True)
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._context_menu)
         self._update_size()
+
+    # ── Undo ──────────────────────────────────────────────────────────────────
+
+    def _push_undo(self):
+        snapshot = copy.deepcopy([s.to_dict() for s in self.rack.slots])
+        self._undo_stack.append(snapshot)
+
+    def undo(self):
+        if not self._undo_stack:
+            return
+        snapshot = self._undo_stack.pop()
+        self.rack.slots = [RackSlot.from_dict(d) for d in snapshot]
+        if self._selected_slot is not None:
+            ids = {s.id for s in self.rack.slots}
+            if self._selected_slot.id not in ids:
+                self._selected_slot = None
+                self.slot_selected.emit(None)
+        self.slot_moved.emit()
+        self.update()
+
+    # ── Size helpers ──────────────────────────────────────────────────────────
 
     def _canvas_width(self):
         return LABEL_W + self.rack.bays * BAY_W + (self.rack.bays - 1) * BAY_SEP
 
     def _canvas_height(self):
-        return self.rack.u_size * SLOT_H + 24  # +24 for stats bar
+        return self.rack.u_size * SLOT_H + 24
 
     def _update_size(self):
         self.setFixedWidth(self._canvas_width())
         self.setFixedHeight(self._canvas_height())
 
     def _bay_left(self, bay):
-        """Left edge of bay content (excluding U label column)."""
         return LABEL_W + bay * (BAY_W + BAY_SEP)
 
     def _point_to_bay_u(self, pos):
-        """Returns (bay, u) from mouse position. u is 1-based. Returns (-1,-1) if outside."""
         x, y = pos.x(), pos.y()
         rack_h = self.rack.u_size * SLOT_H
         if y < 0 or y >= rack_h:
@@ -85,10 +117,34 @@ class RackCanvas(QWidget):
                 return bay, u
         return -1, -1
 
+    # ── Focus / active tracking ───────────────────────────────────────────────
+
+    def focusInEvent(self, event):
+        self.became_active.emit(self)
+        super().focusInEvent(event)
+
+    def mousePressEvent(self, event):
+        self.setFocus()
+        self.became_active.emit(self)
+        if event.button() == Qt.MouseButton.LeftButton:
+            slot, bay = self._slot_at(event.position().toPoint())
+            if slot:
+                u_clicked = int(event.position().toPoint().y() // SLOT_H) + 1
+                self._drag_slot      = slot
+                self._drag_bay       = bay
+                self._drag_offset    = u_clicked - slot.position_u
+                self._drag_moved     = False
+            else:
+                self._selected_slot = None
+                self.slot_selected.emit(None)
+                self.update()
+
     # ── Drag from library ─────────────────────────────────────────────────────
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasText():
+            self.setFocus()
+            self.became_active.emit(self)
             event.acceptProposedAction()
 
     def dragMoveEvent(self, event):
@@ -120,22 +176,22 @@ class RackCanvas(QWidget):
         if bay < 0:
             bay, target_u = 0, 1
 
-        # ── Tray logic: try to merge with existing slot at target_u ───────────
         if not dev.rack_native and dev.width_mm is not None:
             existing = self.rack.slot_at(target_u, bay)
             if existing is not None and self._can_add_to_tray(existing, dev):
+                self._push_undo()
                 self._add_to_tray(existing, dev)
                 self.slot_moved.emit()
                 self.update()
                 event.acceptProposedAction()
                 return
 
-        # ── Normal drop ───────────────────────────────────────────────────────
         pos = self._free_near(target_u, dev.u_height, bay)
         if pos is None:
             MsgBox.warn(self, "No space", "Not enough free space in this bay.")
             self.update()
             return
+        self._push_undo()
         self.rack.slots.append(RackSlot(
             device_id=dev.id,
             device_snapshot=dev.to_dict(),
@@ -148,13 +204,10 @@ class RackCanvas(QWidget):
 
     # ── Tray helpers ──────────────────────────────────────────────────────────
 
-    def _can_add_to_tray(self, slot: RackSlot, dev: "DeviceDefinition") -> bool:
-        """True if dev can join slot as a tray member."""
+    def _can_add_to_tray(self, slot: RackSlot, dev) -> bool:
         snap = slot.device_snapshot
-        # Slot must itself be non-rack-native (has a defined width_mm < full rack)
         if slot.is_tray:
             return slot.tray_can_fit(dev.width_mm)
-        # Single non-tray slot: eligible only if it is also non-rack-native
         if snap.get("rack_native", True):
             return False
         slot_w = snap.get("width_mm")
@@ -162,10 +215,8 @@ class RackCanvas(QWidget):
             return False
         return (slot_w + dev.width_mm) <= 482.0
 
-    def _add_to_tray(self, slot: RackSlot, dev: "DeviceDefinition") -> None:
-        """Convert slot to tray (if needed) and append dev."""
+    def _add_to_tray(self, slot: RackSlot, dev) -> None:
         if not slot.is_tray:
-            # Promote existing single device to tray_devices list
             slot.tray_devices = [dict(slot.device_snapshot)]
             slot.device_snapshot = {}
         slot.tray_devices.append(dev.to_dict())
@@ -193,21 +244,6 @@ class RackCanvas(QWidget):
 
     # ── Internal drag to reorder ──────────────────────────────────────────────
 
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            slot, bay = self._slot_at(event.position().toPoint())
-            if slot:
-                u_clicked = int(event.position().toPoint().y() // SLOT_H) + 1
-                self._drag_slot   = slot
-                self._drag_bay    = bay
-                self._drag_offset = u_clicked - slot.position_u
-                self._drag_moved  = False
-            else:
-                # Click on empty area — deselect
-                self._selected_slot = None
-                self.slot_selected.emit(None)
-                self.update()
-
     def mouseMoveEvent(self, event):
         if self._drag_slot and (event.buttons() & Qt.MouseButton.LeftButton):
             bay, u_raw = self._point_to_bay_u(event.position().toPoint())
@@ -224,22 +260,110 @@ class RackCanvas(QWidget):
             )
             if not collision:
                 if new_u != self._drag_slot.position_u:
+                    if not self._drag_moved:
+                        self._push_undo()
                     self._drag_moved = True
                 self._drag_slot.position_u = new_u
                 self.update()
 
     def mouseReleaseEvent(self, event):
         if self._drag_slot:
-            slot = self._drag_slot
-            moved = getattr(self, '_drag_moved', False)
-            self._drag_slot = None
+            slot      = self._drag_slot
+            moved     = self._drag_moved
+            self._drag_slot  = None
+            self._drag_moved = False
             if moved:
                 self.slot_moved.emit()
             else:
-                # It was a click, not a drag — select the slot
                 self._selected_slot = slot
                 self.slot_selected.emit(slot)
             self.update()
+
+    # ── Keyboard shortcuts ────────────────────────────────────────────────────
+
+    def keyPressEvent(self, event):
+        key  = event.key()
+        mods = event.modifiers()
+        ctrl = Qt.KeyboardModifier.ControlModifier
+
+        if mods & ctrl and key == Qt.Key.Key_C:
+            self._kb_copy()
+        elif mods & ctrl and key == Qt.Key.Key_X:
+            self._kb_cut()
+        elif mods & ctrl and key == Qt.Key.Key_V:
+            self._kb_paste()
+        elif mods & ctrl and key == Qt.Key.Key_D:
+            self._kb_duplicate()
+        elif mods & ctrl and key == Qt.Key.Key_Z:
+            self.undo()
+        elif key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self._kb_delete()
+        else:
+            super().keyPressEvent(event)
+
+    def _kb_copy(self):
+        if self._selected_slot is None:
+            return
+        RackCanvas._clipboard = copy.deepcopy(self._selected_slot.to_dict())
+
+    def _kb_cut(self):
+        if self._selected_slot is None:
+            return
+        RackCanvas._clipboard = copy.deepcopy(self._selected_slot.to_dict())
+        self._push_undo()
+        self.rack.slots.remove(self._selected_slot)
+        self._selected_slot = None
+        self.slot_selected.emit(None)
+        self.slot_removed.emit()
+        self.update()
+
+    def _kb_paste(self):
+        if RackCanvas._clipboard is None:
+            return
+        import uuid
+        data     = copy.deepcopy(RackCanvas._clipboard)
+        u_height = data.get("u_height", 1)
+        bay      = self._selected_slot.bay if self._selected_slot else 0
+        pos      = self._free_near(1, u_height, bay)
+        if pos is None:
+            for b in range(self.rack.bays):
+                pos = self._free_near(1, u_height, b)
+                if pos is not None:
+                    bay = b
+                    break
+        if pos is None:
+            MsgBox.warn(self, "No space", "Not enough free space in this rack.")
+            return
+        self._push_undo()
+        new_slot             = RackSlot.from_dict(data)
+        new_slot.id          = str(uuid.uuid4())
+        new_slot.position_u  = pos
+        new_slot.bay         = bay
+        self.rack.slots.append(new_slot)
+        self._selected_slot  = new_slot
+        self.slot_selected.emit(new_slot)
+        self.slot_moved.emit()
+        self.update()
+
+    def _kb_duplicate(self):
+        if self._selected_slot is None:
+            return
+        RackCanvas._clipboard = copy.deepcopy(self._selected_slot.to_dict())
+        self._kb_paste()
+
+    def _kb_delete(self):
+        if self._selected_slot is None:
+            return
+        slot = self._selected_slot
+        if not MsgBox.question_danger(self, "Remove slot",
+                                      f"Remove '{slot.name}' from rack?"):
+            return
+        self._push_undo()
+        self.rack.slots.remove(slot)
+        self._selected_slot = None
+        self.slot_selected.emit(None)
+        self.slot_removed.emit()
+        self.update()
 
     # ── Paint ─────────────────────────────────────────────────────────────────
 
@@ -248,28 +372,21 @@ class RackCanvas(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         rack_h = self.rack.u_size * SLOT_H
-
-        # Fill entire widget background (U-label column + stats bar area)
-        # to prevent ghosting from underlying widgets bleeding through.
         p.fillRect(0, 0, self._canvas_width(), self._canvas_height(), QColor("#181818"))
 
         for bay in range(self.rack.bays):
             bx = self._bay_left(bay)
 
-            # Bay separator
             if bay > 0:
                 p.fillRect(bx - BAY_SEP, 0, BAY_SEP, rack_h, QColor("#0d0d0d"))
 
-            # Bay background
             p.fillRect(bx, 0, BAY_W, rack_h, QColor("#141414"))
 
-            # U grid lines (very subtle)
             p.setPen(QPen(QColor("#1e1e1e"), 1))
             for u in range(self.rack.u_size + 1):
                 y = u * SLOT_H
                 p.drawLine(bx, y, bx + BAY_W, y)
 
-            # U labels — leftmost bay only
             if bay == 0:
                 f = QFont("Consolas", U_FONT_SIZE)
                 p.setFont(f)
@@ -280,14 +397,12 @@ class RackCanvas(QWidget):
                                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                                str(u + 1))
 
-            # Drop hover highlight
             if self._hover_bay == bay and self._hover_u > 0:
                 hy = (self._hover_u - 1) * SLOT_H
                 p.setPen(QPen(QColor(ACCENT), 2))
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawRect(bx + 1, hy + 1, BAY_W - 2, SLOT_H - 2)
 
-            # ── Draw slots ────────────────────────────────────────────────────
             for slot in sorted(
                 [s for s in self.rack.slots if s.bay == bay],
                 key=lambda s: s.position_u
@@ -302,36 +417,23 @@ class RackCanvas(QWidget):
                                self._selected_slot.id == slot.id)
 
                 if slot.is_tray:
-                    # ── Tray: draw sub-devices side by side ───────────────────
                     p.fillRect(sx, sy, sw, sh, QColor("#141414"))
-
-                    total_mm = sum(d.get("width_mm") or 482.0 for d in slot.tray_devices)
-                    px_per_mm = sw / max(total_mm, 482.0)
-                    cur_x = sx
+                    total_mm   = sum(d.get("width_mm") or 482.0 for d in slot.tray_devices)
+                    px_per_mm  = sw / max(total_mm, 482.0)
+                    cur_x      = sx
                     for i, dev_snap in enumerate(slot.tray_devices):
                         dev_mm  = dev_snap.get("width_mm") or 482.0
                         dev_px  = int(dev_mm * px_per_mm)
-                        # Last device gets any rounding remainder
                         if i == len(slot.tray_devices) - 1:
                             dev_px = sx + sw - cur_x
-
                         from app.models import category_color
                         color_hex = dev_snap.get("color") or category_color(dev_snap.get("category", "Other"))
                         dev_color = QColor(color_hex)
-
-                        # Sub-device background — same neutral as normal slots
-                        p.fillRect(cur_x + 1, sy + 1, dev_px - 2, sh - 2,
-                                   QColor("#1c1c1c"))
-
-                        # Left color stripe per sub-device
+                        p.fillRect(cur_x + 1, sy + 1, dev_px - 2, sh - 2, QColor("#1c1c1c"))
                         p.fillRect(cur_x + 1, sy + 1, 3, sh - 2, dev_color)
-
-                        # Separator between sub-devices
                         if i > 0:
                             p.setPen(QPen(QColor("#0a0a0a"), 1))
                             p.drawLine(cur_x, sy, cur_x, sy + sh)
-
-                        # Sub-device name
                         name_font = QFont("Segoe UI", NAME_FONT_SIZE)
                         name_font.setWeight(QFont.Weight.Medium)
                         p.setFont(name_font)
@@ -340,10 +442,8 @@ class RackCanvas(QWidget):
                         p.drawText(name_rect,
                                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                                    dev_snap.get("name", "?"))
-
                         cur_x += dev_px
 
-                    # Outer tray border
                     if is_selected:
                         p.setPen(QPen(QColor(ACCENT), 1))
                     else:
@@ -351,34 +451,25 @@ class RackCanvas(QWidget):
                     p.drawRect(sx, sy, sw, sh)
 
                 else:
-                    # ── Normal single-device slot ─────────────────────────────
-                    # Slot background
                     p.fillRect(sx, sy, sw, sh, QColor("#1c1c1c"))
-
-                    # Left accent bar — amber if slot has notes, else dim
                     left_bar_color = QColor(ACCENT) if slot.notes else QColor("#2a2a2a")
                     p.fillRect(sx, sy, 4, sh, left_bar_color)
-
-                    # Slot border — highlight if selected
                     if is_selected:
                         p.setPen(QPen(QColor(ACCENT), 1))
                     else:
                         p.setPen(QPen(QColor("#282828"), 1))
                     p.drawRect(sx, sy, sw, sh)
 
-                    # ── Name ──────────────────────────────────────────────────
                     name_font = QFont("Segoe UI", NAME_FONT_SIZE)
                     name_font.setWeight(QFont.Weight.Medium)
                     p.setFont(name_font)
                     p.setPen(QColor("#c8c0b0"))
-
-                    pad_l = 10
+                    pad_l     = 10
                     name_rect = QRect(sx + pad_l, sy, sw - pad_l - 40, sh)
                     p.drawText(name_rect,
                                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                                slot.name)
 
-                    # ── U height badge (right) ─────────────────────────────
                     u_font = QFont("Consolas", U_FONT_SIZE)
                     p.setFont(u_font)
                     p.setPen(QColor("#383838"))
@@ -387,11 +478,10 @@ class RackCanvas(QWidget):
                                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                                f"{slot.u_height}U")
 
-            # Bay outer border
             p.setPen(QPen(QColor("#2a2a2a"), 1))
             p.drawRect(bx, 0, BAY_W, rack_h)
 
-        # ── Stats bar ─────────────────────────────────────────────────────────
+        # Stats bar
         p.setFont(QFont("Segoe UI", 8))
         p.setPen(QColor("#444"))
         used   = self.rack.used_u()
@@ -408,7 +498,6 @@ class RackCanvas(QWidget):
     # ── Hit test ──────────────────────────────────────────────────────────────
 
     def _slot_at(self, pos):
-        """Returns (slot, bay) or (None, -1)."""
         bay, u = self._point_to_bay_u(pos)
         if bay < 0:
             return None, -1
@@ -429,7 +518,15 @@ class RackCanvas(QWidget):
             QMenu::separator { height:1px; background:#333; }
         """)
         if slot:
+            self._selected_slot = slot
+            self.slot_selected.emit(slot)
+            self.update()
+
             note_act   = menu.addAction("Edit notes…")
+            menu.addSeparator()
+            copy_act   = menu.addAction("Copy\tCtrl+C")
+            cut_act    = menu.addAction("Cut\tCtrl+X")
+            dup_act    = menu.addAction("Duplicate\tCtrl+D")
             menu.addSeparator()
             up_act     = menu.addAction("Move up  ↑")
             down_act   = menu.addAction("Move down  ↓")
@@ -445,17 +542,28 @@ class RackCanvas(QWidget):
                 for i, dev_snap in enumerate(slot.tray_devices):
                     act = tray_menu.addAction(dev_snap.get("name", f"Device {i+1}"))
                     tray_acts.append((i, act))
-            remove_act = menu.addAction("Remove from rack")
+            remove_act = menu.addAction("Remove from rack\tDel")
+
             action = menu.exec(self.mapToGlobal(pos))
             if action == remove_act:
+                self._push_undo()
                 self.rack.slots.remove(slot)
+                self._selected_slot = None
+                self.slot_selected.emit(None)
                 self.slot_removed.emit()
                 self.update()
             elif action == note_act:
                 dlg = SlotNoteDialog(slot, self)
                 if dlg.exec():
+                    self._push_undo()
                     slot.notes = dlg.get_notes()
                     self.update()
+            elif action == copy_act:
+                self._kb_copy()
+            elif action == cut_act:
+                self._kb_cut()
+            elif action == dup_act:
+                self._kb_duplicate()
             elif action == up_act:
                 self._move_step(slot, -1)
             elif action == down_act:
@@ -463,13 +571,15 @@ class RackCanvas(QWidget):
             elif slot.is_tray:
                 for i, act in tray_acts:
                     if action == act:
+                        self._push_undo()
                         slot.tray_devices.pop(i)
-                        # If only one device left, demote tray back to normal slot
                         if len(slot.tray_devices) == 1:
                             slot.device_snapshot = slot.tray_devices[0]
                             slot.tray_devices = []
                         elif len(slot.tray_devices) == 0:
                             self.rack.slots.remove(slot)
+                            self._selected_slot = None
+                            self.slot_selected.emit(None)
                             self.slot_removed.emit()
                         self.slot_moved.emit()
                         self.update()
@@ -480,9 +590,14 @@ class RackCanvas(QWidget):
                 blank_act = menu.addAction(
                     f"Insert blank panel at U{u}" +
                     (f" (Bay {b+1})" if self.rack.bays > 1 else ""))
+                paste_act = None
+                if RackCanvas._clipboard is not None:
+                    paste_act = menu.addAction("Paste here\tCtrl+V")
                 action = menu.exec(self.mapToGlobal(pos))
                 if action == blank_act:
                     self._insert_blank(u, b)
+                elif paste_act and action == paste_act:
+                    self._kb_paste()
 
     def _move_step(self, slot, direction):
         new_pos = slot.position_u + direction
@@ -494,6 +609,7 @@ class RackCanvas(QWidget):
             for s in others:
                 if s.position_u <= u < s.position_u + s.u_height:
                     return
+        self._push_undo()
         slot.position_u = new_pos
         self.slot_moved.emit()
         self.update()
@@ -507,16 +623,16 @@ class RackCanvas(QWidget):
             "image_front": "", "image_rear": "",
         }
         if not self.rack.is_slot_occupied(u, 1, bay):
+            self._push_undo()
             self.rack.slots.append(RackSlot(device_snapshot=snapshot, position_u=u, bay=bay))
             self.slot_moved.emit()
             self.update()
 
     def add_device(self, device: DeviceDefinition, bay: int = 0) -> bool:
-        """Add device to specified bay, or first bay with space.
-        Uses _free_near to find the first position with enough consecutive free U."""
         for b in [bay] + [i for i in range(self.rack.bays) if i != bay]:
             pos = self._free_near(1, device.u_height, b)
             if pos is not None:
+                self._push_undo()
                 self.rack.slots.append(RackSlot(
                     device_id=device.id,
                     device_snapshot=device.to_dict(),
