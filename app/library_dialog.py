@@ -293,9 +293,9 @@ class DeviceForm(QWidget):
         self.rack_native_chk = QCheckBox("Rack-native (standard 19\")")
         self.rack_native_chk.setChecked(True)
         self.rack_native_chk.setStyleSheet(f"""
-            QCheckBox {{ color:{TEXT_SECONDARY}; font-size:11px; spacing:8px; }}
+            QCheckBox {{ color:{TEXT_SECONDARY}; font-size:11px; spacing:8px; background:transparent; }}
             QCheckBox::indicator {{ width:14px; height:14px;
-                background:#232323; border:1px solid #404040; border-radius:3px; }}
+                background:#2e2e2e; border:1px solid #505050; }}
             QCheckBox::indicator:checked {{ background:{ACCENT}; border:1px solid {ACCENT}; }}
         """)
         self.rack_native_chk.stateChanged.connect(self._on_rack_native_changed)

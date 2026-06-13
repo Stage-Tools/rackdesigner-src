@@ -101,6 +101,10 @@ class _MsgDialog(QDialog):
         fl.setSpacing(8)
         fl.addStretch()
 
+        # Il primo bottone con ruolo "accept" o "danger" diventa il default (Enter)
+        _default_roles = {"accept", "danger"}
+        _has_default = False
+
         for label, role in buttons:
             btn = QPushButton(label)
             btn.setFixedHeight(28)
@@ -137,6 +141,15 @@ class _MsgDialog(QDialog):
                     QPushButton:hover {{ color:{TEXT_SECONDARY}; border-color:#555; }}
                     QPushButton:pressed {{ background:{BG3}; }}
                 """)
+
+            # Il primo bottone "accetta/danger" cattura Enter
+            if role in _default_roles and not _has_default:
+                btn.setDefault(True)
+                btn.setAutoDefault(True)
+                _has_default = True
+            else:
+                btn.setDefault(False)
+                btn.setAutoDefault(False)
 
             _role = role
             _label = label

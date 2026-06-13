@@ -128,7 +128,7 @@ class NavBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(44)
-        self.setStyleSheet(f"background:{BG0}; border-bottom:1px solid #2a2a2a;")
+        self.setStyleSheet(f"background:#1E1E1E; border-bottom:1px solid #2a2a2a;")
         self._btns = []
 
         layout = QHBoxLayout(self)
@@ -224,7 +224,7 @@ class ProjectSection(QWidget):
         # ── Sidebar: recent projects ──────────────────────────────────────────
         sidebar = QWidget()
         sidebar.setFixedWidth(220)
-        sidebar.setStyleSheet(f"background:#1a1a1a; border-right:1px solid #2a2a2a;")
+        sidebar.setStyleSheet(f"background:#272727; border-right:1px solid #2a2a2a;")
         sb = QVBoxLayout(sidebar)
         sb.setContentsMargins(0, 0, 0, 0)
         sb.setSpacing(0)
@@ -233,7 +233,7 @@ class ProjectSection(QWidget):
 
         self.recent_list = QListWidget()
         self.recent_list.setStyleSheet(f"""
-            QListWidget {{ background:#1a1a1a; border:none; outline:none; }}
+            QListWidget {{ background:#272727; border:none; outline:none; }}
             QListWidget::item {{ padding:8px 12px; border-bottom:1px solid #242424; color:{TEXT_SECONDARY}; }}
             QListWidget::item:hover {{ background:#222; color:{TEXT_PRIMARY}; }}
             QListWidget::item:selected {{
@@ -245,7 +245,7 @@ class ProjectSection(QWidget):
         sb.addWidget(self.recent_list)
 
         bottom = QWidget()
-        bottom.setStyleSheet(f"background:#1a1a1a; border-top:1px solid #2a2a2a;")
+        bottom.setStyleSheet(f"background:#272727; border-top:1px solid #2a2a2a;")
         bl = QVBoxLayout(bottom)
         bl.setContentsMargins(8, 8, 8, 8)
         bl.setSpacing(4)
@@ -511,6 +511,61 @@ class ProjectSection(QWidget):
 
 # ── DESIGNER section ──────────────────────────────────────────────────────────
 
+# ── Canvas scroll area con pan/zoom cartesiano ────────────────────────────────
+
+class _CanvasScrollArea(QScrollArea):
+    """
+    ScrollArea che gestisce la navigazione del workspace rack come piano cartesiano:
+    - Rotella          → scroll verticale
+    - Shift + Rotella  → scroll orizzontale
+    - Ctrl  + Rotella  → zoom in/out (delega a DesignerSection._set_all_zoom)
+    - Ctrl  + 0        → fit all (delega a DesignerSection.fit_all_racks)
+    """
+    def __init__(self, designer_section, parent=None):
+        super().__init__(parent)
+        self._designer = designer_section
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+    def wheelEvent(self, event):
+        mods = event.modifiers()
+        delta = event.angleDelta().y()
+        if delta == 0:
+            delta = event.angleDelta().x()
+
+        ctrl  = Qt.KeyboardModifier.ControlModifier
+        shift = Qt.KeyboardModifier.ShiftModifier
+
+        if mods & ctrl:
+            # Zoom: delega al designer, non scorrere
+            from app.rack_canvas import ZOOM_STEP, ZOOM_MIN, ZOOM_MAX
+            current = (self._designer._canvases[0].get_scale()
+                       if self._designer._canvases else 1.0)
+            step = ZOOM_STEP if delta > 0 else -ZOOM_STEP
+            self._designer._set_all_zoom(current + step)
+            event.accept()
+        elif mods & shift:
+            # Scroll orizzontale
+            sb = self.horizontalScrollBar()
+            sb.setValue(sb.value() - delta)
+            event.accept()
+        else:
+            # Scroll verticale
+            sb = self.verticalScrollBar()
+            sb.setValue(sb.value() - delta)
+            event.accept()
+
+    def keyPressEvent(self, event):
+        mods = event.modifiers()
+        key  = event.key()
+        ctrl = Qt.KeyboardModifier.ControlModifier
+        if mods & ctrl and key == Qt.Key.Key_0:
+            self._designer.fit_all_racks()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+
 class DesignerSection(QWidget):
     project_changed = pyqtSignal()
 
@@ -532,7 +587,7 @@ class DesignerSection(QWidget):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setHandleWidth(3)
         splitter.setStyleSheet(f"""
-            QSplitter::handle {{ background:#141414; }}
+            QSplitter::handle {{ background:#1E1E1E; }}
             QSplitter::handle:hover {{ background:#2a2a2a; }}
         """)
 
@@ -540,14 +595,14 @@ class DesignerSection(QWidget):
         sidebar = QWidget()
         sidebar.setMinimumWidth(240)
         sidebar.setMaximumWidth(420)
-        sidebar.setStyleSheet(f"background:#1a1a1a;")
+        sidebar.setStyleSheet(f"background:#272727;")
         sb = QVBoxLayout(sidebar)
         sb.setContentsMargins(0, 0, 0, 0)
         sb.setSpacing(0)
 
         # ── Manual tab bar (two buttons + QStackedWidget) ────────────────────
         tab_bar = QWidget()
-        tab_bar.setStyleSheet(f"background:#1a1a1a; border-bottom:1px solid #2a2a2a;")
+        tab_bar.setStyleSheet(f"background:#272727; border-bottom:1px solid #2a2a2a;")
         tab_bar.setFixedHeight(36)
         tbl = QHBoxLayout(tab_bar)
         tbl.setContentsMargins(0, 0, 0, 0)
@@ -556,12 +611,12 @@ class DesignerSection(QWidget):
         def _tab_btn_style(active):
             if active:
                 return f"""QPushButton {{
-                    background:#1a1a1a; color:{TEXT_SECONDARY};
+                    background:#272727; color:{TEXT_SECONDARY};
                     border:none; border-bottom:2px solid #666;
                     font-size:9px; font-weight:700; letter-spacing:1.5px; padding:0;
                 }}"""
             return f"""QPushButton {{
-                background:#1a1a1a; color:#707070;
+                background:#272727; color:#707070;
                 border:none; border-bottom:2px solid transparent;
                 font-size:9px; font-weight:700; letter-spacing:1.5px; padding:0;
             }}
@@ -576,7 +631,7 @@ class DesignerSection(QWidget):
         self._tab_lib_btn.setStyleSheet(_tab_btn_style(False))
 
         self._tab_stack = QStackedWidget()
-        self._tab_stack.setStyleSheet("background:#1a1a1a;")
+        self._tab_stack.setStyleSheet("background:#272727;")
 
         def _switch_tab(idx):
             self._tab_stack.setCurrentIndex(idx)
@@ -593,14 +648,17 @@ class DesignerSection(QWidget):
 
         # Tab 1: RACKS
         racks_tab = QWidget()
-        racks_tab.setStyleSheet(f"background:#1a1a1a;")
+        racks_tab.setStyleSheet(f"background:#272727;")
         rt = QVBoxLayout(racks_tab)
         rt.setContentsMargins(0, 0, 0, 0)
         rt.setSpacing(0)
 
         self.rack_list = QListWidget()
+        self.rack_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+        self.rack_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.rack_list.model().rowsMoved.connect(self._on_rack_reordered)
         self.rack_list.setStyleSheet(f"""
-            QListWidget {{ background:#1a1a1a; border:none; outline:none; font-size:11px; }}
+            QListWidget {{ background:#272727; border:none; outline:none; font-size:11px; }}
             QListWidget::item {{ padding:8px 12px; border-bottom:1px solid #242424; color:{TEXT_SECONDARY}; }}
             QListWidget::item:hover {{ background:#222; color:{TEXT_PRIMARY}; }}
             QListWidget::item:selected {{
@@ -613,7 +671,7 @@ class DesignerSection(QWidget):
         # Slot info panel
         self._slot_info_panel = QWidget()
         self._slot_info_panel.setStyleSheet(
-            f"background:#111; border-top:1px solid #2a2a2a;")
+            f"background:#1E1E1E; border-top:1px solid #2a2a2a;")
         self._slot_info_panel.setVisible(False)
         sip_l = QVBoxLayout(self._slot_info_panel)
         sip_l.setContentsMargins(10, 8, 10, 8)
@@ -637,7 +695,7 @@ class DesignerSection(QWidget):
 
         # Rack bottom actions
         rack_foot = QWidget()
-        rack_foot.setStyleSheet(f"background:#1a1a1a; border-top:1px solid #2a2a2a;")
+        rack_foot.setStyleSheet(f"background:#272727; border-top:1px solid #2a2a2a;")
         rfl = QVBoxLayout(rack_foot)
         rfl.setContentsMargins(8, 8, 8, 8)
         rfl.setSpacing(4)
@@ -658,21 +716,21 @@ class DesignerSection(QWidget):
 
         # Tab 2: LIBRARY
         lib_tab = QWidget()
-        lib_tab.setStyleSheet(f"background:#1a1a1a;")
+        lib_tab.setStyleSheet(f"background:#272727;")
         lt = QVBoxLayout(lib_tab)
         lt.setContentsMargins(0, 0, 0, 0)
         lt.setSpacing(0)
 
         # Filter + search
         fs = QWidget()
-        fs.setStyleSheet(f"background:#1a1a1a;")
+        fs.setStyleSheet(f"background:#272727;")
         fsl = QVBoxLayout(fs)
         fsl.setContentsMargins(8, 6, 8, 4)
         fsl.setSpacing(4)
 
         self.cat_filter = QComboBox()
         self.cat_filter.setStyleSheet(f"""
-            QComboBox {{ background:#111; color:{TEXT_MUTED}; border:1px solid #1a1a1a;
+            QComboBox {{ background:#1E1E1E; color:{TEXT_MUTED}; border:1px solid #1a1a1a;
                 border-radius:3px; font-size:10px; padding:3px 6px; }}
             QComboBox QAbstractItemView {{ background:{BG2}; color:{TEXT_PRIMARY};
                 border:1px solid {BG4}; selection-background-color:{BG3}; }}
@@ -696,7 +754,7 @@ class DesignerSection(QWidget):
 
         self.lib_list = DraggableLibList()
         self.lib_list.setStyleSheet(f"""
-            QListWidget {{ background:#1a1a1a; border:none; outline:none; font-size:11px; }}
+            QListWidget {{ background:#272727; border:none; outline:none; font-size:11px; }}
             QListWidget::item {{ padding:6px 12px; border-bottom:1px solid #242424; color:{TEXT_SECONDARY}; }}
             QListWidget::item:hover {{ background:#222; color:{TEXT_PRIMARY}; }}
             QListWidget::item:selected {{ background:#222; color:{TEXT_PRIMARY}; }}
@@ -711,11 +769,11 @@ class DesignerSection(QWidget):
         # Custom slot at bottom of library tab
         lt.addWidget(h_sep())
         custom_w = QWidget()
-        custom_w.setStyleSheet(f"background:#1a1a1a;")
+        custom_w.setStyleSheet(f"background:#272727;")
         cvl = QVBoxLayout(custom_w)
         cvl.setContentsMargins(8, 8, 8, 8)
         cvl.setSpacing(5)
-        cvl.addWidget(lbl("CUSTOM SLOT", 9, True, "#2a2a2a", 1.5))
+        cvl.addWidget(lbl("CUSTOM SLOT", 9, True, "#606060", 1.5))
         cr = QHBoxLayout()
         self.custom_name = self.custom_name = QLineEdit()
         self.custom_name.setPlaceholderText("Label…")
@@ -733,13 +791,24 @@ class DesignerSection(QWidget):
         spin_layout.setContentsMargins(0, 0, 0, 0)
         spin_layout.setSpacing(0)
 
-        self._custom_u_lbl = QLabel("1")
-        self._custom_u_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._custom_u_lbl = QLineEdit("1")
         self._custom_u_lbl.setFixedWidth(28)
+        self._custom_u_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._custom_u_lbl.setStyleSheet(f"""
-            QLabel {{ background:#222; color:{TEXT_PRIMARY}; border:1px solid #333;
-                border-right:none; border-radius:0; font-size:11px; padding:3px 0; }}
+            QLineEdit {{ background:#222; color:{TEXT_PRIMARY}; border:1px solid #333;
+                border-right:none; border-radius:0; font-size:11px; padding:2px 0; }}
+            QLineEdit:focus {{ border:1px solid {ACCENT}; border-right:none; }}
         """)
+
+        def _u_commit():
+            try:
+                v = int(self._custom_u_lbl.text())
+                self._custom_u_val = max(1, min(20, v))
+            except ValueError:
+                pass
+            self._custom_u_lbl.setText(str(self._custom_u_val))
+
+        self._custom_u_lbl.editingFinished.connect(_u_commit)
 
         btn_col = QWidget()
         btn_col.setFixedWidth(18)
@@ -754,14 +823,16 @@ class DesignerSection(QWidget):
                 font-size:8px; padding:0; min-height:12px; max-height:12px;
             }}
             QPushButton:hover {{ background:#383838; color:{TEXT_PRIMARY}; }}
-            QPushButton:pressed {{ background:#1a1a1a; }}
+            QPushButton:pressed {{ background:#272727; }}
         """
         up_btn = QPushButton("▲")
         up_btn.setFixedSize(18, 12)
         up_btn.setStyleSheet(btn_style)
+        up_btn.setAutoDefault(False)
         dn_btn = QPushButton("▼")
         dn_btn.setFixedSize(18, 12)
         dn_btn.setStyleSheet(btn_style)
+        dn_btn.setAutoDefault(False)
 
         def _u_up():
             self._custom_u_val = min(20, self._custom_u_val + 1)
@@ -795,7 +866,7 @@ class DesignerSection(QWidget):
 
         # ── Canvas ────────────────────────────────────────────────────────────
         canvas_w = QWidget()
-        canvas_w.setStyleSheet(f"background:#181818;")
+        canvas_w.setStyleSheet(f"background:#1E1E1E;")
         cw = QVBoxLayout(canvas_w)
         cw.setContentsMargins(0, 0, 0, 0)
         cw.setSpacing(0)
@@ -803,21 +874,54 @@ class DesignerSection(QWidget):
         # Info bar
         info_bar = QWidget()
         info_bar.setFixedHeight(34)
-        info_bar.setStyleSheet(f"background:#1a1a1a; border-bottom:1px solid #2a2a2a;")
+        info_bar.setStyleSheet(f"background:#272727; border-bottom:1px solid #2a2a2a;")
         ibl = QHBoxLayout(info_bar)
-        ibl.setContentsMargins(16, 0, 16, 0)
+        ibl.setContentsMargins(16, 0, 8, 0)
         self.info_lbl = QLabel("")
         self.info_lbl.setStyleSheet(f"color:#606060; font-size:10px;")
         ibl.addWidget(self.info_lbl)
         ibl.addStretch()
+
+        # Zoom controls
+        _zbtn_ss = f"""
+            QPushButton {{
+                background:transparent; color:{TEXT_MUTED};
+                border:1px solid #333; border-radius:3px;
+                font-size:10px; font-weight:700; padding:0 6px; min-width:22px; min-height:20px;
+            }}
+            QPushButton:hover {{ color:{TEXT_PRIMARY}; border-color:#555; }}
+        """
+        zm = QPushButton("−")
+        zm.setStyleSheet(_zbtn_ss)
+        zm.setToolTip("Zoom out  (Ctrl+−)")
+        zm.clicked.connect(lambda: self._zoom_active(-1))
+        zp = QPushButton("+")
+        zp.setStyleSheet(_zbtn_ss)
+        zp.setToolTip("Zoom in  (Ctrl++)")
+        zp.clicked.connect(lambda: self._zoom_active(+1))
+        self._zoom_lbl = QLabel("100%")
+        self._zoom_lbl.setStyleSheet(f"color:{TEXT_MUTED}; font-size:9px; min-width:36px;")
+        self._zoom_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        zr = QPushButton("FIT")
+        zr.setStyleSheet(_zbtn_ss)
+        zr.setToolTip("Fit all racks to window")
+        zr.clicked.connect(self.fit_all_racks)
+
+        ibl.addWidget(zm)
+        ibl.addWidget(self._zoom_lbl)
+        ibl.addWidget(zp)
+        ibl.addSpacing(6)
+        ibl.addWidget(zr)
+        ibl.addSpacing(6)
         cw.addWidget(info_bar)
 
-        scroll = QScrollArea()
+        scroll = _CanvasScrollArea(self, canvas_w)
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet(f"background:{BG0}; border:none;")
+        scroll.setStyleSheet(f"background:#1E1E1E; border:none;")
         scroll.setAcceptDrops(True)
+        self._canvas_scroll = scroll   # riferimento per fit_all
         self.rack_container = QWidget()
-        self.rack_container.setStyleSheet(f"background:#181818;")
+        self.rack_container.setStyleSheet(f"background:#1E1E1E;")
         self.rack_container.setAcceptDrops(True)
         self.rack_area = QHBoxLayout(self.rack_container)
         self.rack_area.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -846,16 +950,16 @@ class DesignerSection(QWidget):
             canvas.slot_moved.connect(self._on_changed)
             canvas.slot_selected.connect(self._on_slot_selected)
             canvas.became_active.connect(self._on_canvas_active)
+            canvas.zoom_changed.connect(self._set_all_zoom)
 
             wrapper = QWidget()
-            wrapper.setStyleSheet(f"background:#181818;")
+            wrapper.setStyleSheet(f"background:#1E1E1E;")
             wrapper.setAcceptDrops(True)
             wl = QVBoxLayout(wrapper)
             wl.setContentsMargins(0, 0, 0, 0)
             wl.setSpacing(0)
 
-            # Rack header: name centrato sopra il canvas
-            wl.addStretch()   # spinge nome+canvas in basso → allineati al fondo
+            wl.addStretch()
             nl = QLabel(rack.name.upper())
             nl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             nl.setStyleSheet(f"color:#505050; font-size:8px; font-weight:700; letter-spacing:2px; padding-bottom:6px; padding-left:40px;")
@@ -914,7 +1018,81 @@ class DesignerSection(QWidget):
         self.info_lbl.setText(s)
 
     def _on_canvas_active(self, canvas: RackCanvas):
+        # Deseleziona il canvas precedente
+        if self._active_canvas and self._active_canvas is not canvas:
+            self._active_canvas._selected_slot = None
+            self._active_canvas._selected_u    = -1
+            self._active_canvas._selected_bay  = -1
+            self._active_canvas.update()
         self._active_canvas = canvas
+        self._sync_zoom_label()
+        # Sincronizza rack_list con il canvas attivo
+        if canvas in self._canvases:
+            row = self._canvases.index(canvas)
+            if self.rack_list.currentRow() != row:
+                self.rack_list.blockSignals(True)
+                self.rack_list.setCurrentRow(row)
+                self.rack_list.blockSignals(False)
+
+    def _sync_zoom_label(self):
+        if self._active_canvas:
+            pct = int(self._active_canvas.get_scale() * 100)
+            self._zoom_lbl.setText(f"{pct}%")
+        elif self._canvases:
+            pct = int(self._canvases[0].get_scale() * 100)
+            self._zoom_lbl.setText(f"{pct}%")
+
+    def _set_all_zoom(self, scale: float):
+        """Applica lo stesso zoom a tutti i canvas e aggiorna la label."""
+        from app.rack_canvas import ZOOM_MIN, ZOOM_MAX
+        scale = max(ZOOM_MIN, min(ZOOM_MAX, scale))
+        for c in self._canvases:
+            c.set_scale(scale)
+        self._sync_zoom_label()
+
+    def _zoom_active(self, direction: int):
+        from app.rack_canvas import ZOOM_STEP
+        current = self._canvases[0].get_scale() if self._canvases else 1.0
+        self._set_all_zoom(current + direction * ZOOM_STEP)
+
+    def fit_all_racks(self):
+        """Scala tutti i canvas allo stesso fattore che li fa stare nella viewport."""
+        if not self._canvases:
+            return
+        vp = self._canvas_scroll.viewport()
+        PAD = 60
+        vw = vp.width()  - PAD
+        vh = vp.height() - PAD
+
+        # Larghezza totale logica: somma di tutti i canvas + spacing tra loro
+        SPACING = 36  # rack_area.setSpacing(36)
+        total_logical_w = sum(c._logical_w() for c in self._canvases) + SPACING * (len(self._canvases) - 1)
+        # Altezza: il rack più alto
+        max_logical_h = max((c._logical_h() for c in self._canvases), default=1)
+
+        scale_w = vw / total_logical_w if total_logical_w > 0 else 2.5
+        scale_h = vh / max_logical_h   if max_logical_h  > 0 else 2.5
+        self._set_all_zoom(min(scale_w, scale_h))
+
+    def _on_rack_reordered(self, parent, src_start, src_end, dst_parent, dst_row):
+        """Sincronizza project.racks con il nuovo ordine della lista."""
+        # Ricostruisce l'ordine dai dati visualizzati nella lista
+        new_order = []
+        for i in range(self.rack_list.count()):
+            item = self.rack_list.item(i)
+            # Il testo è "Nome\nUsed/Size"
+            rack_name = item.text().split("\n")[0]
+            rack = next((r for r in self.project.racks if r.name == rack_name), None)
+            if rack:
+                new_order.append(rack)
+        # Aggiunge eventuali rack non trovati per nome (failsafe)
+        for r in self.project.racks:
+            if r not in new_order:
+                new_order.append(r)
+        self.project.racks = new_order
+        self._clear_racks()
+        self._refresh_rack_view()
+        self.project_changed.emit()
 
     def undo(self):
         if self._active_canvas is not None:
@@ -1031,19 +1209,41 @@ class DesignerSection(QWidget):
         self._refresh_rack_view()
         self._on_changed()
 
+    def _active_rack_row(self):
+        """Ritorna il row del rack attivo. Prima usa _active_canvas, fallback rack_list."""
+        if self._active_canvas and self._active_canvas in self._canvases:
+            return self._canvases.index(self._active_canvas)
+        row = self.rack_list.currentRow()
+        return row if row >= 0 else -1
+
+    def _canvas_selected_position(self, canvas, row):
+        """Ritorna (at_u, bay) dalla selezione corrente del canvas.
+        Slot selezionato o cella vuota → posizione esatta.
+        Nulla selezionato → (None, 0) per prima U libera.
+        """
+        rack = self.project.racks[row]
+        if (canvas._selected_slot is not None and
+                canvas._selected_slot in rack.slots):
+            return canvas._selected_slot.position_u, canvas._selected_slot.bay
+        if canvas._selected_u > 0 and canvas._selected_bay >= 0:
+            return canvas._selected_u, canvas._selected_bay
+        return None, 0
+
     def _add_device_dbl(self, item):
         dev_id = item.data(Qt.ItemDataRole.UserRole)
         dev = next((d for d in self.library if d.id == dev_id), None)
         if not dev:
             return
-        row = self.rack_list.currentRow()
+        row = self._active_rack_row()
         if row < 0:
             if len(self.project.racks) == 1:
                 row = 0
             else:
                 MsgBox.info(self, "Add device", "Select a rack first.")
                 return
-        if not self._canvases[row].add_device(dev):
+        canvas = self._canvases[row]
+        at_u, at_bay = self._canvas_selected_position(canvas, row)
+        if not canvas.add_device(dev, bay=at_bay, at_u=at_u):
             MsgBox.warn(self, "No space", f"Not enough free space in '{self.project.racks[row].name}'.")
         else:
             self._on_changed()
@@ -1053,7 +1253,7 @@ class DesignerSection(QWidget):
         if not name:
             MsgBox.info(self, "Custom slot", "Enter a label first.")
             return
-        row = self.rack_list.currentRow()
+        row = self._active_rack_row()
         if row < 0:
             if len(self.project.racks) == 0:
                 MsgBox.info(self, "Custom slot", "No racks in project.")
@@ -1071,8 +1271,14 @@ class DesignerSection(QWidget):
         import uuid
         dev = DeviceDefinition(id=str(uuid.uuid4()), name=name, category="Other",
                                u_height=self._custom_u_val, color="#555555")
-        if not self._canvases[row].add_device(dev):
-            MsgBox.warn(self, "No space", "Not enough free space.")
+        canvas = self._canvases[row]
+        at_u, at_bay = self._canvas_selected_position(canvas, row)
+        if not canvas.add_device(dev, bay=at_bay, at_u=at_u):
+            if at_u is not None:
+                MsgBox.warn(self, "No space",
+                            f"Unit {at_u} is already occupied or too small for {self._custom_u_val}U.")
+            else:
+                MsgBox.warn(self, "No space", "Not enough free space.")
         else:
             self.custom_name.clear()
             self._on_changed()
@@ -1087,14 +1293,21 @@ class ExportSection(QWidget):
         self._build()
 
     def _build(self):
-        self.setStyleSheet(f"background:#181818;")
+        BG = "#1E1E1E"
+        self.setStyleSheet(f"ExportSection {{ background:{BG}; }}")
+
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        content = QWidget()
-        content.setStyleSheet("background:#181818;")
-        cl = QHBoxLayout(content)
+        # ScrollArea che riempie tutta l'area disponibile — niente stretch residuo
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(f"QScrollArea {{ background:{BG}; border:none; }}")
+
+        inner = QWidget()
+        inner.setStyleSheet(f"QWidget {{ background:{BG}; }}")
+        cl = QHBoxLayout(inner)
         cl.setContentsMargins(28, 24, 28, 24)
         cl.setSpacing(40)
         cl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -1102,16 +1315,13 @@ class ExportSection(QWidget):
         # RACKS column
         rack_col_w = QWidget()
         rack_col_w.setMinimumWidth(180)
-        rack_col_w.setStyleSheet("background:transparent;")
         rack_col_l = QVBoxLayout(rack_col_w)
         rack_col_l.setContentsMargins(0, 0, 0, 0)
         rack_col_l.setSpacing(0)
         rack_title = QLabel("RACKS TO INCLUDE")
         rack_title.setStyleSheet("color:#606060; font-size:9px; font-weight:700; letter-spacing:2px; padding-bottom:10px;")
         rack_col_l.addWidget(rack_title)
-        # Inner widget for checkboxes only — so clear() doesnt delete the title
         self._rack_inner = QWidget()
-        self._rack_inner.setStyleSheet("background:transparent;")
         self.rack_checks_layout = QVBoxLayout(self._rack_inner)
         self.rack_checks_layout.setContentsMargins(0, 0, 0, 0)
         self.rack_checks_layout.setSpacing(0)
@@ -1122,7 +1332,6 @@ class ExportSection(QWidget):
         # CONTENT column
         cont_col_w = QWidget()
         cont_col_w.setMinimumWidth(240)
-        cont_col_w.setStyleSheet("background:transparent;")
         cont_col_l = QVBoxLayout(cont_col_w)
         cont_col_l.setContentsMargins(0, 0, 0, 0)
         cont_col_l.setSpacing(0)
@@ -1131,7 +1340,7 @@ class ExportSection(QWidget):
         cont_col_l.addWidget(cont_title)
 
         self.chk_diagram     = self._chk("Rack diagram", False)
-        self.chk_color       = self._chk_sub("Color (uncheck for B&&W)", False)
+        self.chk_color       = self._chk_sub("Use device colours", False)
         self.chk_devlist     = self._chk("Device list per rack", False)
         self.chk_devlist_cat = self._chk_sub("Include category column", False)
         self.chk_power       = self._chk("Power totals", False)
@@ -1139,7 +1348,6 @@ class ExportSection(QWidget):
         self.chk_summary     = self._chk("Project summary", False)
         self.chk_notes       = self._chk("Slot notes", False)
 
-        # Sub-options start disabled; enabled when parent is checked
         self.chk_color.setEnabled(False)
         self.chk_devlist_cat.setEnabled(False)
         self.chk_diagram.stateChanged.connect(
@@ -1153,23 +1361,29 @@ class ExportSection(QWidget):
                   self.chk_summary, self.chk_notes]:
             c.stateChanged.connect(self._update_summary)
             cont_col_l.addWidget(c)
+            sep = QFrame()
+            sep.setFrameShape(QFrame.Shape.HLine)
+            sep.setFixedHeight(1)
+            sep.setStyleSheet("background:#333333; border:none; margin:0;")
+            cont_col_l.addWidget(sep)
         cont_col_l.addStretch()
         cl.addWidget(cont_col_w)
+        cl.addStretch()
 
-        root.addWidget(content)
-        root.addStretch()
+        scroll.setWidget(inner)
+        root.addWidget(scroll)
 
         # Footer
         footer = QWidget()
         footer.setFixedHeight(44)
-        footer.setStyleSheet("background:#111; border-top:1px solid #1e1e1e;")
+        footer.setStyleSheet(f"background:#272727; border-top:1px solid #333333;")
         fl = QHBoxLayout(footer)
         fl.setContentsMargins(28, 0, 28, 0)
         fl.setSpacing(14)
         self.export_btn = ghost_push("EXPORT PDF", amber=True)
         self.export_btn.clicked.connect(self._do_export)
         self.summary_lbl = QLabel("")
-        self.summary_lbl.setStyleSheet("color:#707070; font-size:10px;")
+        self.summary_lbl.setStyleSheet("color:#909088; font-size:10px;")
         fl.addWidget(self.export_btn)
         fl.addWidget(self.summary_lbl)
         fl.addStretch()
@@ -1182,20 +1396,19 @@ class ExportSection(QWidget):
         c.setStyleSheet("""
             QCheckBox {
                 color:#909090; font-size:12px; spacing:10px;
-                padding:8px 0; border-bottom:1px solid #232323;
-                min-width:180px;
+                padding:6px 0; min-width:180px; background:transparent;
             }
             QCheckBox:hover { color:#c8c0ac; }
             QCheckBox:disabled { color:#404040; }
             QCheckBox::indicator {
                 width:14px; height:14px;
-                background:#232323; border:1px solid #404040; border-radius:3px;
+                background:#2e2e2e; border:1px solid #505050;
             }
             QCheckBox::indicator:checked {
                 background:#e8a020; border:1px solid #e8a020;
             }
             QCheckBox::indicator:disabled {
-                background:#1a1a1a; border:1px solid #2a2a2a;
+                background:#222222; border:1px solid #333333;
             }
             QCheckBox::indicator:checked:disabled {
                 background:#3a2e10; border:1px solid #3a2e10;
@@ -1204,34 +1417,32 @@ class ExportSection(QWidget):
         return c
 
     def _chk_sub(self, text, checked=False):
-        """Sub-option checkbox: indented, smaller, fully invisible when disabled."""
         c = QCheckBox(text)
         c.setChecked(checked)
         c.setCursor(Qt.CursorShape.PointingHandCursor)
         c.setStyleSheet("""
             QCheckBox {
                 color:#555555; font-size:11px; spacing:10px;
-                padding:5px 0 5px 20px; border-bottom:1px solid #1e1e1e;
-                min-width:200px;
+                padding:4px 0 4px 20px; min-width:200px; background:transparent;
             }
-            QCheckBox:enabled { color:#909090; }
+            QCheckBox:enabled { color:#707070; }
             QCheckBox:hover:enabled { color:#c8c0ac; }
-            QCheckBox:disabled { color:#2a2a2a; }
+            QCheckBox:disabled { color:#383838; }
             QCheckBox::indicator {
                 width:12px; height:12px;
-                background:#1e1e1e; border:1px solid #2a2a2a; border-radius:2px;
+                background:#222222; border:1px solid #3a3a3a;
             }
             QCheckBox::indicator:enabled {
-                background:#232323; border:1px solid #404040;
+                background:#2e2e2e; border:1px solid #505050;
             }
             QCheckBox::indicator:checked:enabled {
                 background:#e8a020; border:1px solid #e8a020;
             }
             QCheckBox::indicator:disabled {
-                background:#181818; border:1px solid #181818;
+                background:#1e1e1e; border:1px solid #1e1e1e;
             }
             QCheckBox::indicator:checked:disabled {
-                background:#181818; border:1px solid #181818;
+                background:#1e1e1e; border:1px solid #1e1e1e;
             }
         """)
         return c
@@ -1311,14 +1522,14 @@ class LibrarySection(QWidget):
 
         tb = QWidget()
         tb.setFixedHeight(44)
-        tb.setStyleSheet(f"background:#1a1a1a; border-bottom:1px solid #2a2a2a;")
+        tb.setStyleSheet(f"background:#272727; border-bottom:1px solid #2a2a2a;")
         tbl = QHBoxLayout(tb)
         tbl.setContentsMargins(16, 0, 16, 0)
         tbl.setSpacing(8)
         self.cat_filter = QComboBox()
         self.cat_filter.setFixedWidth(150)
         self.cat_filter.setStyleSheet(f"""
-            QComboBox {{ background:#111; color:{TEXT_MUTED}; border:1px solid #1a1a1a;
+            QComboBox {{ background:#1E1E1E; color:{TEXT_MUTED}; border:1px solid #1a1a1a;
                 border-radius:3px; font-size:10px; padding:3px 6px; }}
             QComboBox QAbstractItemView {{ background:{BG2}; color:{TEXT_PRIMARY};
                 border:1px solid {BG4}; selection-background-color:{BG3}; }}
@@ -1348,17 +1559,17 @@ class LibrarySection(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setHandleWidth(3)
-        splitter.setStyleSheet(f"QSplitter::handle {{ background:#141414; }}")
+        splitter.setStyleSheet(f"QSplitter::handle {{ background:#1E1E1E; }}")
 
         list_w = QWidget()
-        list_w.setStyleSheet(f"background:#181818;")
+        list_w.setStyleSheet(f"background:#1E1E1E;")
         ll = QVBoxLayout(list_w)
         ll.setContentsMargins(0, 0, 0, 0)
         ll.setSpacing(0)
 
         self.dev_list = QListWidget()
         self.dev_list.setStyleSheet(f"""
-            QListWidget {{ background:{BG0}; border:none; outline:none; font-size:11px; }}
+            QListWidget {{ background:#1E1E1E; border:none; outline:none; font-size:11px; }}
             QListWidget::item {{ padding:9px 14px; border-bottom:1px solid #0f0f0f; color:{TEXT_SECONDARY}; }}
             QListWidget::item:hover {{ background:#0f0f0f; color:{TEXT_SECONDARY}; }}
             QListWidget::item:selected {{ background:#0f0f0f; color:{TEXT_PRIMARY};
@@ -1368,7 +1579,7 @@ class LibrarySection(QWidget):
         ll.addWidget(self.dev_list)
 
         footer = QWidget()
-        footer.setStyleSheet(f"background:#1a1a1a; border-top:1px solid #2a2a2a;")
+        footer.setStyleSheet(f"background:#272727; border-top:1px solid #2a2a2a;")
         fl = QHBoxLayout(footer)
         fl.setContentsMargins(10, 7, 10, 7)
         fl.setSpacing(6)
@@ -1392,7 +1603,7 @@ class LibrarySection(QWidget):
 
         fh = QWidget()
         fh.setFixedHeight(44)
-        fh.setStyleSheet(f"background:#1a1a1a; border-bottom:1px solid #2a2a2a;")
+        fh.setStyleSheet(f"background:#272727; border-bottom:1px solid #2a2a2a;")
         fhl = QHBoxLayout(fh)
         fhl.setContentsMargins(16, 0, 16, 0)
         self.form_title = QLabel("Select a device to edit")
@@ -1674,16 +1885,16 @@ class LibrarySection(QWidget):
 class AboutSection(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setStyleSheet(f"background:#181818;")
+        self.setStyleSheet(f"background:#1E1E1E;")
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet(f"background:{BG0}; border:none;")
+        scroll.setStyleSheet(f"background:#1E1E1E; border:none;")
         container = QWidget()
-        container.setStyleSheet(f"background:#181818;")
+        container.setStyleSheet(f"background:#1E1E1E;")
         cl = QVBoxLayout(container)
         cl.setContentsMargins(72, 56, 72, 56)
         cl.setSpacing(0)
@@ -1693,7 +1904,7 @@ class AboutSection(QWidget):
         product.setStyleSheet(f"color:{TEXT_PRIMARY}; letter-spacing:5px;")
         cl.addWidget(product)
 
-        ver = QLabel("v0.1.18")
+        ver = QLabel("v0.1.19")
         ver.setStyleSheet(f"color:#505050; font-size:12px; letter-spacing:1px; margin-top:6px;")
         cl.addWidget(ver)
 
@@ -2088,7 +2299,7 @@ class MainWindow(QMainWindow):
     def _build_status(self):
         self._status = QStatusBar()
         self.setStatusBar(self._status)
-        self._status.showMessage("Ready  —  Rack Designer v0.1.18  ·  Stage Tools")
+        self._status.showMessage("Ready  —  Rack Designer v0.1.19  ·  Stage Tools")
 
     def _switch(self, idx):
         self.stack.setCurrentIndex(idx)

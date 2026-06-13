@@ -86,64 +86,96 @@ class RackDrawing(Flowable):
         rw = RACK_W
         rh = self.rack.u_size * SLOT_H
 
-        # Background
-        c.setFillColor(HexColor("#111111"))
+        # ── Light theme palette ───────────────────────────────────────────────
+        COL_BG        = HexColor("#ffffff")   # rack background
+        COL_GRID      = HexColor("#d8d8d8")   # grid lines
+        COL_U_LABEL   = HexColor("#888888")   # U number labels
+        COL_SLOT_BG   = HexColor("#f4f4f4")   # empty-slot fill
+        COL_SLOT_OCC  = HexColor("#e8e8e8")   # occupied slot body (no colour)
+        COL_TEXT      = HexColor("#1a1a1a")   # device name text
+        COL_U_TEXT    = HexColor("#888888")   # U-size badge text
+        COL_BORDER    = HexColor("#aaaaaa")   # rack outer border
+        COL_STRIPE_NEUTRAL = HexColor("#999999")  # colour stripe when use_color=False
+
+        # Rack white background
+        c.setFillColor(COL_BG)
         c.rect(rx, ry, rw, rh, fill=1, stroke=0)
 
         # Grid lines
-        c.setStrokeColor(HexColor("#2a2a2a"))
+        c.setStrokeColor(COL_GRID)
         c.setLineWidth(0.3)
         for i in range(self.rack.u_size + 1):
             y = ry + i * SLOT_H
             c.line(rx, y, rx + rw, y)
 
-        # U labels: U1 at bottom (i=0), U_n at top
+        # U labels (U1 at bottom, matching canvas top-down → PDF bottom-up mirror)
         c.setFont("Helvetica", 5)
-        c.setFillColor(HexColor("#555555"))
+        c.setFillColor(COL_U_LABEL)
         for i in range(self.rack.u_size):
             label_num = i + 1
             y = ry + i * SLOT_H
             c.drawRightString(rx - 1 * mm, y + SLOT_H * 0.3, str(label_num))
 
-        # ReportLab: y=0 at bottom.
-        # In the Qt canvas, position_u=1 is at the TOP (y=0). We must mirror:
+        # Slots
+        # ReportLab y=0 at bottom; Qt position_u=1 at top → mirror:
         # sy = ry + (u_size - position_u - u_height + 1) * SLOT_H
         for slot in self.rack.slots:
             sy = ry + (self.rack.u_size - slot.position_u - slot.u_height + 1) * SLOT_H
             sh = slot.u_height * SLOT_H
 
-            raw  = slot.effective_color
-            if self.use_color:
-                eff  = raw
-                dark = _darken(eff, 0.35)
-            else:
-                eff  = "#555555"
-                dark = "#1c1c1c"
+            raw = slot.effective_color
 
-            c.setFillColor(HexColor(dark))
+            if self.use_color:
+                accent_hex = raw
+                # Lighten the raw colour significantly for slot body background
+                try:
+                    h = raw.lstrip("#")
+                    r2, g2, b2 = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+                    # Blend toward white at 85%
+                    def _blend(ch):
+                        return int(ch + (255 - ch) * 0.82)
+                    slot_bg = f"#{_blend(r2):02x}{_blend(g2):02x}{_blend(b2):02x}"
+                    border_col = f"#{int(r2*0.7):02x}{int(g2*0.7):02x}{int(b2*0.7):02x}"
+                except Exception:
+                    slot_bg = "#eeeeee"
+                    border_col = "#aaaaaa"
+                accent_color  = HexColor(accent_hex)
+                slot_bg_color = HexColor(slot_bg)
+                border_color  = HexColor(border_col)
+            else:
+                accent_color  = COL_STRIPE_NEUTRAL
+                slot_bg_color = COL_SLOT_OCC
+                border_color  = COL_GRID
+
+            # Slot body
+            c.setFillColor(slot_bg_color)
             c.rect(rx + 1, sy + 0.5, rw - 2, sh - 1, fill=1, stroke=0)
-            c.setFillColor(HexColor(eff))
+
+            # Left colour stripe (3 mm)
+            c.setFillColor(accent_color)
             c.rect(rx + 1, sy + 0.5, 3 * mm, sh - 1, fill=1, stroke=0)
-            c.setStrokeColor(HexColor(eff))
-            c.setLineWidth(0.5)
+
+            # Slot border
+            c.setStrokeColor(border_color)
+            c.setLineWidth(0.4)
             c.rect(rx + 1, sy + 0.5, rw - 2, sh - 1, fill=0, stroke=1)
 
-            c.setFillColor(white)
+            # Device name — dark text
+            c.setFillColor(COL_TEXT)
             c.setFont("Helvetica-Bold", 6)
             text_x = rx + 5 * mm
             text_y = sy + sh * 0.5 - 2
             c.drawString(text_x, text_y, slot.name)
 
+            # U-size badge — muted
             c.setFont("Helvetica", 5)
-            c.setFillColor(HexColor("#aaaaaa"))
+            c.setFillColor(COL_U_TEXT)
             c.drawRightString(rx + rw - 2 * mm, text_y, f"{slot.u_height}U")
-            # Notes icon omitted intentionally
 
-        # Rack border
-        c.setStrokeColor(HexColor("#444444"))
-        c.setLineWidth(1.5)
+        # Rack outer border
+        c.setStrokeColor(COL_BORDER)
+        c.setLineWidth(1.2)
         c.rect(rx, ry, rw, rh, fill=0, stroke=1)
-        # No stats line below — shown in the Paragraph above the drawing
 
         if s != 1.0:
             c.restoreState()
