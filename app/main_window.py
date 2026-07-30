@@ -12,6 +12,7 @@ from app.dialogs import MsgBox
 from app.models import Project, Rack, DeviceDefinition, get_categories
 from app.rack_canvas import RackCanvas
 from app import storage
+from app import APP_VERSION
 from app.style import (ACCENT, ACCENT_DARK, BG0, BG1, BG2, BG3, BG4,
                         TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED, DANGER,
                         FONT_TITLE, FONT_BODY)
@@ -208,12 +209,14 @@ class NavBar(QWidget):
 
 class ProjectSection(QWidget):
     project_loaded = pyqtSignal(object)
+    project_changed = pyqtSignal()
     save_requested = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, project=None, parent=None):
         super().__init__(parent)
         self._filepath = None
-        self.project = Project()
+        self.project = project if project is not None else Project()
+        self._loading = False
         self._build()
 
     def _build(self):
@@ -339,6 +342,11 @@ class ProjectSection(QWidget):
         form.addRow(lbl("Venue",        10, color="#808080"), self.venue_edit)
         form.addRow(lbl("Date", 10, color="#808080"), self.date_edit)
         form.addRow(lbl("Notes", 10, color="#808080"), self.notes_edit)
+        self.name_edit.textChanged.connect(self._on_field_changed)
+        self.commessa_edit.textChanged.connect(self._on_field_changed)
+        self.venue_edit.textChanged.connect(self._on_field_changed)
+        self.date_edit.textChanged.connect(self._on_field_changed)
+        self.notes_edit.textChanged.connect(self._on_field_changed)
         fl.addLayout(form)
         fl.addStretch()
         scroll.setWidget(form_w)
@@ -406,12 +414,15 @@ class ProjectSection(QWidget):
             self._refresh_recent()
             return
         try:
-            p = storage.load_project(path)
+            p, skip_warnings = storage.load_project(path)
             self._filepath = path
             self.load_project(p, path)
             self.project_loaded.emit(p)
+            if skip_warnings:
+                MsgBox.warn(self, "Project loaded with issues", "\n".join(skip_warnings))
         except Exception as e:
             MsgBox.error(self, "Error", str(e))
+            self._refresh_recent()
 
     def _delete_project(self):
         item = self.recent_list.currentItem()
@@ -438,6 +449,7 @@ class ProjectSection(QWidget):
             self.project_loaded.emit(self.project)
 
     def load_project(self, project: Project, filepath=None):
+        self._loading = True
         self.project = project
         self._filepath = filepath
         self.name_edit.setText(project.name)
@@ -445,8 +457,15 @@ class ProjectSection(QWidget):
         self.venue_edit.setText(project.venue)
         self.date_edit.setText(project.date)
         self.notes_edit.setPlainText(project.notes)
+        self._loading = False
         self._update_hero()
         self._refresh_recent()
+
+    def _on_field_changed(self, *args):
+        """Marks the project dirty on manual edits, ignored while load_project()/_apply() sets fields programmatically."""
+        if self._loading:
+            return
+        self.project_changed.emit()
 
     def _update_hero(self):
         self.hero_name.setText(self.project.name)
@@ -460,7 +479,9 @@ class ProjectSection(QWidget):
         self.project.venue = self.venue_edit.text().strip()
         self.project.date = self.date_edit.text().strip()
         self.project.notes = self.notes_edit.toPlainText().strip()
+        self._loading = True
         self.name_edit.setText(self.project.name)
+        self._loading = False
         self._update_hero()
         self.project_loaded.emit(self.project)
 
@@ -487,10 +508,12 @@ class ProjectSection(QWidget):
         if not path:
             return
         try:
-            p = storage.load_project(path)
+            p, skip_warnings = storage.load_project(path)
             self._filepath = path
             self.load_project(p, path)
             self.project_loaded.emit(p)
+            if skip_warnings:
+                MsgBox.warn(self, "Project loaded with issues", "\n".join(skip_warnings))
         except Exception as e:
             MsgBox.error(self, "Error", str(e))
 
@@ -569,12 +592,12 @@ class _CanvasScrollArea(QScrollArea):
 class DesignerSection(QWidget):
     project_changed = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, project=None, parent=None):
         super().__init__(parent)
-        self.project = Project()
+        self.project = project if project is not None else Project()
         self._canvases: list[RackCanvas] = []
         self._active_canvas: RackCanvas = None
-        self.library: list[DeviceDefinition] = storage.load_library()
+        self.library: list[DeviceDefinition] = storage.load_library().items
         self._build()
         self._refresh()
 
@@ -657,6 +680,7 @@ class DesignerSection(QWidget):
         self.rack_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
         self.rack_list.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.rack_list.model().rowsMoved.connect(self._on_rack_reordered)
+        self.rack_list.currentRowChanged.connect(self._on_rack_row_selected)
         self.rack_list.setStyleSheet(f"""
             QListWidget {{ background:#272727; border:none; outline:none; font-size:11px; }}
             QListWidget::item {{ padding:8px 12px; border-bottom:1px solid #242424; color:{TEXT_SECONDARY}; }}
@@ -984,6 +1008,7 @@ class DesignerSection(QWidget):
         self.rack_list.clear()
         for rack in self.project.racks:
             item = QListWidgetItem(f"{rack.name}\n{rack.used_u()}U / {rack.u_size}U")
+            item.setData(Qt.ItemDataRole.UserRole, rack.id)
             item.setToolTip(f"{rack.free_u()}U free · {rack.total_watts():.0f}W · {rack.total_weight():.1f}kg")
             self.rack_list.addItem(item)
 
@@ -1034,6 +1059,31 @@ class DesignerSection(QWidget):
                 self.rack_list.setCurrentRow(row)
                 self.rack_list.blockSignals(False)
 
+    def _on_rack_row_selected(self, row):
+        """Clicking a rack's sidebar row also makes its canvas the active one
+        (task.md #14) — otherwise _active_canvas keeps pointing at whatever
+        canvas was last clicked directly, and actions like double-click-to-add
+        target the wrong rack."""
+        if 0 <= row < len(self._canvases):
+            self._on_canvas_active(self._canvases[row])
+
+    def _restore_active_canvas(self, prev_rack_id):
+        """Re-point _active_canvas at the rack that was active before a
+        _clear_racks()+_refresh_rack_view() rebuild, matched by Rack.id (not
+        list position/name — both can shift under add/remove/reorder). Old
+        RackCanvas widgets are discarded on every rebuild, so without this
+        _active_canvas is left pointing at an orphaned widget (task.md #17).
+        Falls back to the first canvas, or None, if that rack no longer
+        exists (e.g. it was just removed)."""
+        self._active_canvas = None
+        if prev_rack_id is not None:
+            for c in self._canvases:
+                if c.rack.id == prev_rack_id:
+                    self._active_canvas = c
+                    break
+        if self._active_canvas is None and self._canvases:
+            self._active_canvas = self._canvases[0]
+
     def _sync_zoom_label(self):
         if self._active_canvas:
             pct = int(self._active_canvas.get_scale() * 100)
@@ -1076,22 +1126,25 @@ class DesignerSection(QWidget):
 
     def _on_rack_reordered(self, parent, src_start, src_end, dst_parent, dst_row):
         """Sincronizza project.racks con il nuovo ordine della lista."""
-        # Ricostruisce l'ordine dai dati visualizzati nella lista
+        prev_rack_id = self._active_canvas.rack.id if self._active_canvas else None
+        # Ricostruisce l'ordine dai dati visualizzati nella lista, per id —
+        # non per nome: due rack con lo stesso nome (es. "New Rack" x2)
+        # collasserebbero altrimenti su un'unica entry (task.md #15)
         new_order = []
         for i in range(self.rack_list.count()):
             item = self.rack_list.item(i)
-            # Il testo è "Nome\nUsed/Size"
-            rack_name = item.text().split("\n")[0]
-            rack = next((r for r in self.project.racks if r.name == rack_name), None)
+            rack_id = item.data(Qt.ItemDataRole.UserRole)
+            rack = next((r for r in self.project.racks if r.id == rack_id), None)
             if rack:
                 new_order.append(rack)
-        # Aggiunge eventuali rack non trovati per nome (failsafe)
+        # Aggiunge eventuali rack non trovati per id (failsafe)
         for r in self.project.racks:
             if r not in new_order:
                 new_order.append(r)
         self.project.racks = new_order
         self._clear_racks()
         self._refresh_rack_view()
+        self._restore_active_canvas(prev_rack_id)
         self.project_changed.emit()
 
     def undo(self):
@@ -1099,7 +1152,15 @@ class DesignerSection(QWidget):
             self._active_canvas.undo()
 
     def reload_library(self):
-        self.library = storage.load_library()
+        self.library = storage.load_library().items
+        cats = ["All categories"] + get_categories()
+        current = self.cat_filter.currentText()
+        self.cat_filter.blockSignals(True)
+        self.cat_filter.clear()
+        self.cat_filter.addItems(cats)
+        idx = self.cat_filter.findText(current)
+        self.cat_filter.setCurrentIndex(idx if idx >= 0 else 0)
+        self.cat_filter.blockSignals(False)
         self._refresh_lib()
 
     def set_project(self, project):
@@ -1149,9 +1210,11 @@ class DesignerSection(QWidget):
             rack = Rack(name=dlg.name_edit.text().strip() or "New Rack",
                         u_size=dlg.size_spin.value(),
                         bays=dlg.bays_spin.value())
+            prev_rack_id = self._active_canvas.rack.id if self._active_canvas else None
             self.project.racks.append(rack)
             self._clear_racks()
             self._refresh_rack_view()
+            self._restore_active_canvas(prev_rack_id)
             self._on_changed()
 
     def _remove_rack(self):
@@ -1162,9 +1225,11 @@ class DesignerSection(QWidget):
         rack = self.project.racks[row]
         if not MsgBox.question_danger(self, "Remove rack", f"Remove '{rack.name}' and all its contents?"):
             return
+        prev_rack_id = self._active_canvas.rack.id if self._active_canvas else None
         self.project.racks.pop(row)
         self._clear_racks()
         self._refresh_rack_view()
+        self._restore_active_canvas(prev_rack_id)
         self._on_changed()
 
     def _edit_rack(self):
@@ -1182,7 +1247,9 @@ class DesignerSection(QWidget):
 
         if delta < 0:
             # Controlla se ci sono slot occupati nelle U che verrebbero rimosse in cima
-            removed_rows = range(1, 1 - delta + 1)   # U 1..abs(delta) verranno eliminate
+            # range(1, 1 - delta + 1) valutava a 1..abs(delta)+1 — una riga di
+            # troppo, rifiutando resize altrimenti legali (task.md #16).
+            removed_rows = range(1, -delta + 1)   # U 1..abs(delta) verranno eliminate
             colliding = [
                 s for s in rack.slots
                 if any(s.position_u <= u < s.position_u + s.u_height for u in removed_rows)
@@ -1205,8 +1272,10 @@ class DesignerSection(QWidget):
 
         rack.name   = new_name
         rack.u_size = new_size
+        prev_rack_id = self._active_canvas.rack.id if self._active_canvas else None
         self._clear_racks()
         self._refresh_rack_view()
+        self._restore_active_canvas(prev_rack_id)
         self._on_changed()
 
     def _active_rack_row(self):
@@ -1236,7 +1305,10 @@ class DesignerSection(QWidget):
             return
         row = self._active_rack_row()
         if row < 0:
-            if len(self.project.racks) == 1:
+            if len(self.project.racks) == 0:
+                MsgBox.info(self, "Add device", "No racks in project.")
+                return
+            elif len(self.project.racks) == 1:
                 row = 0
             else:
                 MsgBox.info(self, "Add device", "Select a rack first.")
@@ -1382,9 +1454,12 @@ class ExportSection(QWidget):
         fl.setSpacing(14)
         self.export_btn = ghost_push("EXPORT PDF", amber=True)
         self.export_btn.clicked.connect(self._do_export)
+        self.export_png_btn = ghost_push("EXPORT RACKS AS PNG")
+        self.export_png_btn.clicked.connect(self._do_export_png)
         self.summary_lbl = QLabel("")
         self.summary_lbl.setStyleSheet("color:#909088; font-size:10px;")
         fl.addWidget(self.export_btn)
+        fl.addWidget(self.export_png_btn)
         fl.addWidget(self.summary_lbl)
         fl.addStretch()
         root.addWidget(footer)
@@ -1501,6 +1576,71 @@ class ExportSection(QWidget):
             MsgBox.info(self, "Export PDF", f"PDF saved:\n{path}")
         except Exception as e:
             MsgBox.error(self, "Export error", str(e))
+
+    @staticmethod
+    def _sanitize_filename(name: str, fallback: str) -> str:
+        """Same character filter/replace storage.save_project() already uses
+        for project→filename sanitization (task.md #65) — kept in sync by
+        hand rather than shared, since storage.py's version is local to its
+        one call site and not exposed as a reusable helper."""
+        safe = "".join(c for c in name if c.isalnum() or c in " _-").strip()
+        return safe.replace(" ", "_") or fallback
+
+    def _do_export_png(self):
+        if not self.project.racks:
+            MsgBox.info(self, "Export", "No racks in project.")
+            return
+        # Same "RACKS TO INCLUDE" checkbox filtering _do_export() (PDF)
+        # already uses, so both export actions respect the same selection
+        # state consistently (task.md #65 addendum, Session 19) — PNG export
+        # previously always exported every rack in the project regardless of
+        # what was checked.
+        selected_racks = [r for r, c in getattr(self, '_rack_checkboxes', []) if c.isChecked()]
+        if not selected_racks:
+            MsgBox.info(self, "Export", "Select at least one rack.")
+            return
+        folder = QFileDialog.getExistingDirectory(self, "Export racks as PNG")
+        if not folder:
+            return
+
+        from pathlib import Path
+        from app.pdf_export import export_rack_png
+
+        out_dir = Path(folder)
+        use_color = self.chk_color.isChecked()
+
+        used_stems = set()
+        succeeded = 0
+        failures = []  # list of (rack_name, error_message)
+
+        for rack in selected_racks:
+            safe = self._sanitize_filename(rack.name, "rack")
+            candidate = safe
+            counter = 2
+            # Dedupe both against other racks already placed in this same
+            # batch (e.g. two racks sharing a name, or two names that merely
+            # sanitize to the same string) and against files already present
+            # in the destination folder from a prior export run — never
+            # silently overwrite either.
+            while candidate in used_stems or (out_dir / f"{candidate}.png").exists():
+                candidate = f"{safe} ({counter})"
+                counter += 1
+            used_stems.add(candidate)
+            filepath = out_dir / f"{candidate}.png"
+
+            try:
+                export_rack_png(rack, str(filepath), use_color=use_color, dpi=300)
+                succeeded += 1
+            except Exception as e:
+                failures.append((rack.name, str(e)))
+
+        total = len(selected_racks)
+        summary = f"Exported {succeeded} of {total} rack(s) to:\n{folder}"
+        if failures:
+            summary += "\n\nFailed:\n" + "\n".join(f"- {n}: {msg}" for n, msg in failures)
+            MsgBox.warn(self, "Export racks as PNG", summary)
+        else:
+            MsgBox.info(self, "Export racks as PNG", summary)
 
 
 # ── LIBRARY section ───────────────────────────────────────────────────────────
@@ -1632,7 +1772,7 @@ class LibrarySection(QWidget):
         root.addWidget(splitter)
 
     def reload(self):
-        self.devices = storage.load_library()
+        self.devices = storage.load_library().items
         cats = ["All categories"] + get_categories()
         current = self.cat_filter.currentText()
         self.cat_filter.blockSignals(True)
@@ -1759,6 +1899,9 @@ class LibrarySection(QWidget):
 
         elif scope == "Category":
             all_cats = sorted({d.category for d in self.devices})
+            if not all_cats:
+                MsgBox.info(self, "Export", "Library is empty — nothing to export.")
+                return
             cat_name, ok = QInputDialog.getItem(
                 self, "Export — category", "Select category:", all_cats, 0, False)
             if not ok:
@@ -1789,6 +1932,9 @@ class LibrarySection(QWidget):
             with open(path, "w", encoding="utf-8") as f:
                 json.dump([d.to_dict() for d in devs], f, indent=2, ensure_ascii=False)
         else:
+            MsgBox.info(self, "Export",
+                        "Note: CSV export does not include device images "
+                        "(front/rear). Use JSON export to preserve them.")
             default_name = "library.csv" if len(devs) > 1 else f"{devs[0].name.replace(' ','_')}.csv"
             path, _ = QFileDialog.getSaveFileName(
                 self, "Export library", default_name, "CSV (*.csv)")
@@ -1836,7 +1982,19 @@ class LibrarySection(QWidget):
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 imported = [DeviceDefinition.from_dict(d) for d in data]
-                new_cats, warnings = [], []
+                # Register any category not already known — mirrors the CSV
+                # import path (storage.import_library_csv() already does this)
+                # so a device from a JSON export made elsewhere doesn't
+                # silently fall back to the wrong category on first load/save
+                # (task.md #20).
+                known_cats = set(get_categories())
+                new_cats = []
+                for d in imported:
+                    if d.category not in known_cats:
+                        known_cats.add(d.category)
+                        new_cats.append(d.category)
+                        storage.register_category_if_unknown(d.category)
+                warnings = []
         except Exception as e:
             MsgBox.error(self, "Import error", str(e))
             return
@@ -1865,8 +2023,23 @@ class LibrarySection(QWidget):
             return
 
         if result == "accept":  # Merge
+            import uuid
+            # existing/existing_ids are updated after each addition (not just
+            # seeded once from self.devices) so two colliding entries within
+            # the same imported file are both caught — not just the first,
+            # against whichever the other happened to be compared to
+            # (task.md #22, alongside the id-collision handling from #21).
             existing = {(d.name, d.category) for d in self.devices}
-            to_add = [d for d in imported if (d.name, d.category) not in existing]
+            existing_ids = {d.id for d in self.devices}
+            to_add = []
+            for d in imported:
+                if (d.name, d.category) in existing:
+                    continue
+                if d.id in existing_ids:
+                    d.id = str(uuid.uuid4())
+                existing.add((d.name, d.category))
+                existing_ids.add(d.id)
+                to_add.append(d)
             self.devices += to_add
             MsgBox.info(self, "Import",
                         f"Merged: {len(to_add)} new device(s) added.\n"
@@ -1904,7 +2077,7 @@ class AboutSection(QWidget):
         product.setStyleSheet(f"color:{TEXT_PRIMARY}; letter-spacing:5px;")
         cl.addWidget(product)
 
-        ver = QLabel("v0.1.19")
+        ver = QLabel(f"v{APP_VERSION}")
         ver.setStyleSheet(f"color:#505050; font-size:12px; letter-spacing:1px; margin-top:6px;")
         cl.addWidget(ver)
 
@@ -1954,6 +2127,8 @@ class AddRackDialog(QDialog):
         preset.addItem("Custom")
         for s in COMMON:
             preset.addItem(f"{s}U")
+        self._preset_combo = preset
+        self._preset_sizes = COMMON
 
         self._size_val = 20
         self._bays_val = 1
@@ -1966,10 +2141,10 @@ class AddRackDialog(QDialog):
         self._size_lbl._commit_fn = lambda: self._commit_spin("_size_val", self._size_lbl, 1, 60)
         self._bays_lbl._commit_fn = lambda: self._commit_spin("_bays_val", self._bays_lbl, 1, 3)
 
-        size_up.clicked.connect(lambda: self._set("_size_val", self._size_lbl, self._size_val + 1, 1, 60))
-        size_dn.clicked.connect(lambda: self._set("_size_val", self._size_lbl, self._size_val - 1, 1, 60))
-        bays_up.clicked.connect(lambda: self._set("_bays_val", self._bays_lbl, self._bays_val + 1, 1, 3))
-        bays_dn.clicked.connect(lambda: self._set("_bays_val", self._bays_lbl, self._bays_val - 1, 1, 3))
+        size_up.clicked.connect(lambda: self._step("_size_val", self._size_lbl, +1, 1, 60))
+        size_dn.clicked.connect(lambda: self._step("_size_val", self._size_lbl, -1, 1, 60))
+        bays_up.clicked.connect(lambda: self._step("_bays_val", self._bays_lbl, +1, 1, 3))
+        bays_dn.clicked.connect(lambda: self._step("_bays_val", self._bays_lbl, -1, 1, 3))
 
         preset.currentIndexChanged.connect(
             lambda i: self._set("_size_val", self._size_lbl, COMMON[i-1], 1, 60) if i > 0 else None)
@@ -1996,6 +2171,12 @@ class AddRackDialog(QDialog):
         # Invio nei field numerici: committa e chiude
         self._size_lbl.returnPressed.connect(lambda: (self._commit_spin("_size_val", self._size_lbl, 1, 60), self.accept()))
         self._bays_lbl.returnPressed.connect(lambda: (self._commit_spin("_bays_val", self._bays_lbl, 1, 3), self.accept()))
+
+        # Reflect the initial default size (20, set directly above rather
+        # than via _set()) in the preset combo right away, instead of
+        # leaving it stuck on "Custom" even though 20 is a real preset
+        # (task.md #28).
+        self._sync_preset_combo(self._size_val)
 
     def _make_spin(self):
         """Campo numerico editabile con frecce laterali."""
@@ -2075,6 +2256,20 @@ class AddRackDialog(QDialog):
         value = max(min_val, min(max_val, value))
         setattr(self, attr, value)
         field.setText(str(value))
+        if attr == "_size_val":
+            self._sync_preset_combo(value)
+
+    def _sync_preset_combo(self, value):
+        """Keeps the preset combo showing the matching preset whenever
+        _size_val changes by any means (typing, arrows, or the preset
+        combo's own selection) — including right after dialog construction,
+        where the 20U default matches a real preset but was set directly,
+        not via _set() (task.md #28). blockSignals prevents this from
+        re-triggering the combo's own currentIndexChanged handler."""
+        idx = self._preset_sizes.index(value) + 1 if value in self._preset_sizes else 0
+        self._preset_combo.blockSignals(True)
+        self._preset_combo.setCurrentIndex(idx)
+        self._preset_combo.blockSignals(False)
 
     def _commit_spin(self, attr, field, min_val, max_val):
         """Normalizza il testo digitato a mano e aggiorna _size_val / _bays_val."""
@@ -2084,6 +2279,14 @@ class AddRackDialog(QDialog):
         except ValueError:
             v = getattr(self, attr)
         self._set(attr, field, v, min_val, max_val)
+
+    def _step(self, attr, field, delta, min_val, max_val):
+        """Commits whatever's currently typed but not yet committed (same
+        parse+clamp as editingFinished) before applying the +/-1 step, so
+        clicking an arrow right after typing uses the typed value as the
+        base instead of the stale last-committed one (task.md #27)."""
+        self._commit_spin(attr, field, min_val, max_val)
+        self._set(attr, field, getattr(self, attr) + delta, min_val, max_val)
 
     # Compatibilità con DesignerSection._add_rack() che chiama .value()
     class _Proxy:
@@ -2117,8 +2320,8 @@ class EditRackDialog(QDialog):
         size_w, self._size_lbl, size_up, size_dn = self._make_spin(rack.u_size)
 
         self._size_lbl._commit_fn = lambda: self._commit_spin("_size_val", self._size_lbl, 1, 60)
-        size_up.clicked.connect(lambda: self._set("_size_val", self._size_lbl, self._size_val + 1, 1, 60))
-        size_dn.clicked.connect(lambda: self._set("_size_val", self._size_lbl, self._size_val - 1, 1, 60))
+        size_up.clicked.connect(lambda: self._step("_size_val", self._size_lbl, +1, 1, 60))
+        size_dn.clicked.connect(lambda: self._step("_size_val", self._size_lbl, -1, 1, 60))
 
         form.addRow(lbl("Name",     10, color="#808080"), self.name_edit)
         form.addRow(lbl("Size (U)", 10, color="#808080"), size_w)
@@ -2228,6 +2431,12 @@ class EditRackDialog(QDialog):
             v = getattr(self, attr)
         self._set(attr, field, v, min_val, max_val)
 
+    def _step(self, attr, field, delta, min_val, max_val):
+        """See AddRackDialog._step() — same fix (task.md #27), duplicated
+        here since EditRackDialog doesn't share a base class with it."""
+        self._commit_spin(attr, field, min_val, max_val)
+        self._set(attr, field, getattr(self, attr) + delta, min_val, max_val)
+
     class _Proxy:
         def __init__(self, dialog, attr):
             self._d = dialog; self._a = attr
@@ -2256,12 +2465,18 @@ class MainWindow(QMainWindow):
         self.navbar.section_changed.connect(self._switch)
         self.navbar.save_btn.clicked.connect(self._save)
 
-        self.proj_section = ProjectSection()
+        # One shared Project(), passed to both sections at construction so there's
+        # never a second, independent object for racks added pre-first-Save to be
+        # silently swapped away from (task.md #25).
+        self.project = Project()
+
+        self.proj_section = ProjectSection(project=self.project)
         self.proj_section.project_loaded.connect(self._on_project_loaded)
+        self.proj_section.project_changed.connect(self._on_changed)
         self.proj_section.save_requested.connect(self._save)
         self.proj_section.set_dirty_check(self._dirty_check)
 
-        self.designer = DesignerSection()
+        self.designer = DesignerSection(project=self.project)
         self.designer.project_changed.connect(self._on_changed)
 
         self.export_section = ExportSection()
@@ -2299,7 +2514,7 @@ class MainWindow(QMainWindow):
     def _build_status(self):
         self._status = QStatusBar()
         self.setStatusBar(self._status)
-        self._status.showMessage("Ready  —  Rack Designer v0.1.19  ·  Stage Tools")
+        self._status.showMessage(f"Ready  —  Rack Designer v{APP_VERSION}  ·  Stage Tools")
 
     def _switch(self, idx):
         self.stack.setCurrentIndex(idx)
@@ -2344,15 +2559,24 @@ class MainWindow(QMainWindow):
         self.proj_section._apply()
         project = self.designer.project
         try:
-            filepath = storage.save_project(project, self.proj_section.get_filepath())
+            filepath, resolved_name = storage.save_project(project, self.proj_section.get_filepath())
+            # save_project() no longer mutates project.name itself (it used to) —
+            # a Save-As-new-name dedup suffix is applied here, explicitly, so the
+            # open project's displayed name still updates as before.
+            project.name = resolved_name
             self.proj_section.set_filepath(filepath)
-            # Risincronizza il form se save_project ha modificato project.name (suffisso)
             self.proj_section.load_project(project, filepath)
             self.proj_section._refresh_recent()
             self._dirty = False
             self._update_title()
             self._status.showMessage(f"Saved: {filepath}")
         except Exception as e:
+            # proj_section._apply() above already emitted project_loaded, which
+            # cleared _dirty before this save was confirmed to succeed — restore
+            # it here so a failed write doesn't let closeEvent()/_dirty_check()
+            # treat the project as saved (task.md #26).
+            self._dirty = True
+            self._update_title()
             MsgBox.error(self, "Error", str(e))
 
     def closeEvent(self, event):

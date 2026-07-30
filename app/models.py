@@ -26,7 +26,7 @@ RACK_INNER_WIDTH = 482.0   # 19" rack usable inner width in mm
 def get_categories() -> list[str]:
     """Returns default + any user-defined custom categories."""
     from app import storage
-    custom = storage.load_custom_categories()
+    custom = storage.load_custom_categories().items
     seen = set(DEFAULT_CATEGORIES)
     result = list(DEFAULT_CATEGORIES)
     for c in custom:
@@ -42,7 +42,13 @@ def category_color(cat: str) -> str:
 
 def mm_to_u(mm: float) -> int:
     """Convert a physical height in mm to the minimum number of rack units needed."""
-    return max(1, math.ceil(mm / RACK_U_MM))
+    # Subtract a tiny epsilon before ceiling — the standard fix for the
+    # classic float-division-then-ceil over-allocation: an exact multiple of
+    # RACK_U_MM (e.g. 3 * 44.45) can land a hair above the true integer due
+    # to floating-point division error, rounding up one extra U (task.md
+    # #32). Non-exact heights are unaffected — 1e-9 is far smaller than any
+    # real-world measurement precision.
+    return max(1, math.ceil(mm / RACK_U_MM - 1e-9))
 
 
 @dataclass
@@ -227,12 +233,25 @@ class Rack:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Rack":
+        bays = d.get("bays", 1)
+        slots = [RackSlot.from_dict(s) for s in d.get("slots", [])]
+        # Clamp any out-of-range bay (only reachable via already-corrupted
+        # project data — nothing in the live UI can produce one) here, once,
+        # at the data's entry point — rather than defensively re-checking
+        # `bay` in every bay-scoped helper below (is_slot_occupied(),
+        # next_free_position(), slot_at(), free_u()). Without this, a slot
+        # with an out-of-range bay is silently invisible to those helpers
+        # (never matches any valid bay they're called with) while free_u()
+        # still counts its U against total capacity — the two disagree
+        # (task.md #40).
+        for s in slots:
+            s.bay = max(0, min(bays - 1, s.bay))
         return cls(
             id=d.get("id", str(uuid.uuid4())),
             name=d.get("name", "Rack"),
             u_size=d.get("u_size", 20),
-            bays=d.get("bays", 1),
-            slots=[RackSlot.from_dict(s) for s in d.get("slots", [])],
+            bays=bays,
+            slots=slots,
         )
 
     def used_u(self) -> int:

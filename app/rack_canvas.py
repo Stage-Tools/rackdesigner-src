@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QFormLayout
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QRect, QPoint
-from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QBrush, QWheelEvent, QKeySequence
+from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QBrush, QWheelEvent, QKeySequence, QPixmap
 from app.models import Rack, RackSlot, DeviceDefinition
 from app.style import ACCENT, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED, BG3, BG4, FONT_BODY
 from app.dialogs import MsgBox
@@ -59,8 +59,17 @@ class SlotEditDialog(QDialog):
         form = QFormLayout()
         form.setSpacing(8)
 
-        self.name_edit = QLineEdit(slot.name if not slot.is_tray else "")
-        self.name_edit.setPlaceholderText("Slot name")
+        if not slot.is_tray:
+            self.name_edit = QLineEdit(slot.name)
+            self.name_edit.setPlaceholderText("Slot name")
+        else:
+            # Trays don't have a single editable name -- each device inside
+            # has its own. No name field is shown at all for a tray, rather
+            # than one that silently discarded whatever was typed into it
+            # while still acting as if a real change had been made
+            # (task.md #54). Not inventing a new "tray label" field, per
+            # the task's explicit scope.
+            self.name_edit = None
 
         self._u_val = slot.u_height
         u_row = QWidget()
@@ -79,9 +88,13 @@ class SlotEditDialog(QDialog):
         ur.addWidget(dn)
         ur.addStretch()
 
-        form.addRow("Name:", self.name_edit)
         if not slot.is_tray:
+            form.addRow("Name:", self.name_edit)
             form.addRow("Height (U):", u_row)
+        else:
+            note = QLabel("This is a tray — each device inside has its own name.")
+            note.setWordWrap(True)
+            form.addRow(note)
         layout.addLayout(form)
 
         btns = QDialogButtonBox(
@@ -99,7 +112,7 @@ class SlotEditDialog(QDialog):
         self._u_lbl.setText(str(self._u_val))
 
     def get_name(self) -> str:
-        return self.name_edit.text().strip()
+        return self.name_edit.text().strip() if self.name_edit is not None else None
 
     def get_u(self) -> int:
         try:
@@ -308,8 +321,32 @@ class RackCanvas(QWidget):
             bay, target_u = self._point_to_bay_u(event.position().toPoint())
             if bay < 0:
                 bay, target_u = 0, 1
-            snap     = slot_data.get("device_snapshot", {})
-            u_height = snap.get("u_height", 1) if snap else slot_data.get("u_height", 1)
+            new_slot = RackSlot.from_dict(slot_data)
+            new_slot.id = str(_uuid.uuid4())
+
+            # Tray merge: a dropped non-rack-native single-device slot can
+            # merge into an existing tray with room, the same way the
+            # library-device-drop branch below already does — previously
+            # this branch never attempted it and always fell through to the
+            # occupied/free-space check, incorrectly rejecting the drop as
+            # "no space" even when the target tray had room (task.md #51).
+            if not new_slot.is_tray:
+                snap = new_slot.device_snapshot
+                if not snap.get("rack_native", True) and snap.get("width_mm") is not None:
+                    dev_obj = DeviceDefinition.from_dict(snap)
+                    existing = self.rack.slot_at(target_u, bay)
+                    if existing is not None and self._can_add_to_tray(existing, dev_obj):
+                        self._push_undo()
+                        self._add_to_tray(existing, dev_obj)
+                        self.slot_moved.emit()
+                        self.update()
+                        event.acceptProposedAction()
+                        return
+
+            # RackSlot.u_height branches correctly on is_tray (tray_u_height()) —
+            # a top-level "u_height" in slot_data never exists, so falling back
+            # to it (as before) always produced 1 for a tray source (task.md #47)
+            u_height = new_slot.u_height
             if (not self.rack.is_slot_occupied(target_u, u_height, bay) and
                     target_u + u_height - 1 <= self.rack.u_size):
                 pos = target_u
@@ -320,8 +357,6 @@ class RackCanvas(QWidget):
                 event.ignore()
                 return
             self._push_undo()
-            new_slot            = RackSlot.from_dict(slot_data)
-            new_slot.id         = str(_uuid.uuid4())
             new_slot.position_u = pos
             new_slot.bay        = bay
             self.rack.slots.append(new_slot)
@@ -362,6 +397,7 @@ class RackCanvas(QWidget):
         if pos is None:
             MsgBox.warn(self, "No space", "Not enough free space in this bay.")
             self.update()
+            event.ignore()
             return
         self._push_undo()
         self.rack.slots.append(RackSlot(
@@ -427,18 +463,19 @@ class RackCanvas(QWidget):
             new_u = max(1, u_raw - self._drag_offset)
             new_u = min(new_u, self.rack.u_size - self._drag_slot.u_height + 1)
             others = [s for s in self.rack.slots
-                      if s.id != self._drag_slot.id and s.bay == self._drag_bay]
+                      if s.id != self._drag_slot.id and s.bay == bay]
             collision = any(
                 not (new_u + self._drag_slot.u_height <= s.position_u or
                      new_u >= s.position_u + s.u_height)
                 for s in others
             )
             if not collision:
-                if new_u != self._drag_slot.position_u:
+                if new_u != self._drag_slot.position_u or bay != self._drag_slot.bay:
                     if not self._drag_moved:
                         self._push_undo()
                     self._drag_moved = True
                 self._drag_slot.position_u = new_u
+                self._drag_slot.bay = bay
                 self.update()
         else:
             # Cursore uscito → avvia QDrag cross-rack
@@ -490,7 +527,7 @@ class RackCanvas(QWidget):
                 self.update()
 
     def mouseReleaseEvent(self, event):
-        if self._drag_slot:
+        if self._drag_slot and event.button() == Qt.MouseButton.LeftButton:
             slot     = self._drag_slot
             moved    = self._drag_moved
             self._drag_slot  = None
@@ -553,9 +590,11 @@ class RackCanvas(QWidget):
             return
         import uuid
         data     = copy.deepcopy(RackCanvas._clipboard)
-        # u_height è in device_snapshot, non nel top-level di RackSlot.to_dict()
-        snap     = data.get("device_snapshot", {})
-        u_height = snap.get("u_height", 1) if snap else data.get("u_height", 1)
+        new_slot = RackSlot.from_dict(data)
+        # RackSlot.u_height branches correctly on is_tray (tray_u_height()) —
+        # a top-level "u_height" in data never exists, so falling back to it
+        # (as before) always produced 1 for a tray source (task.md #47)
+        u_height = new_slot.u_height
         clip_id  = data.get("id", "")
 
         # Se _selected_slot è lo stesso oggetto nel clipboard (Ctrl+C senza
@@ -594,7 +633,6 @@ class RackCanvas(QWidget):
             MsgBox.warn(self, "No space", "Not enough free space in this rack.")
             return
         self._push_undo()
-        new_slot            = RackSlot.from_dict(data)
         new_slot.id         = str(uuid.uuid4())
         new_slot.position_u = pos
         new_slot.bay        = bay
@@ -609,11 +647,16 @@ class RackCanvas(QWidget):
     def _kb_duplicate(self):
         if self._selected_slot is None:
             return
-        RackCanvas._clipboard = copy.deepcopy(self._selected_slot.to_dict())
+        source = self._selected_slot
+        RackCanvas._clipboard = copy.deepcopy(source.to_dict())
         saved_u   = self._selected_u
         saved_bay = self._selected_bay
-        self._selected_u   = -1
-        self._selected_bay = -1
+        # Punta subito dopo la sorgente, nel suo stesso bay: _kb_paste() la
+        # userà come target (selected_is_source salta il ramo "incolla dopo
+        # lo slot selezionato", ma questo elif lo copre) invece di ricadere
+        # sempre sulla ricerca da bay=0 (task.md #49)
+        self._selected_u   = source.position_u + source.u_height
+        self._selected_bay = source.bay
         self._kb_paste()
         if self._selected_slot is None:
             self._selected_u   = saved_u
@@ -678,11 +721,17 @@ class RackCanvas(QWidget):
                                str(u + 1))
 
             if self._hover_bay == bay and self._hover_u > 0:
-                hy = (self._hover_u - 1) * SLOT_H
-                hover_h = self._hover_u_height * SLOT_H
-                p.setPen(QPen(QColor(ACCENT), 2))
-                p.setBrush(Qt.BrushStyle.NoBrush)
-                p.drawRect(bx + 1, hy + 1, BAY_W - 2, hover_h - 2)
+                # Clamp the preview's U range to [1, rack.u_size] so hovering
+                # a multi-U drag payload near the bottom rows doesn't draw
+                # the highlight extending past the rack frame (task.md #53).
+                hover_top    = max(1, self._hover_u)
+                hover_bottom = min(self.rack.u_size, self._hover_u + self._hover_u_height - 1)
+                if hover_bottom >= hover_top:
+                    hy = (hover_top - 1) * SLOT_H
+                    hover_h = (hover_bottom - hover_top + 1) * SLOT_H
+                    p.setPen(QPen(QColor(ACCENT), 2))
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    p.drawRect(bx + 1, hy + 1, BAY_W - 2, hover_h - 2)
 
             # Evidenzia cella vuota selezionata
             if (self._selected_slot is None and
@@ -920,6 +969,12 @@ class RackCanvas(QWidget):
             elif blank_act and action == blank_act:
                 self._insert_blank(u, b)
             elif paste_act and action == paste_act:
+                # Forza il target sulla cella cliccata col tasto destro,
+                # invece di lasciare che _kb_paste() usi una selezione
+                # precedente/stale (task.md #48)
+                self._selected_slot = None
+                self._selected_u    = u
+                self._selected_bay  = b
                 self._kb_paste()
 
     # ── Slot editing ──────────────────────────────────────────────────────────
@@ -928,31 +983,33 @@ class RackCanvas(QWidget):
         dlg = SlotEditDialog(slot, self)
         if not dlg.exec():
             return
+        if slot.is_tray:
+            # Nothing in the dialog is editable for a tray (no name field,
+            # no U-height field) -- nothing could have changed, so don't
+            # push an undo entry or emit slot_moved as if something did
+            # (task.md #54).
+            return
         new_name = dlg.get_name()
         new_u    = dlg.get_u()
         if not new_name:
             return
         self._push_undo()
-        if slot.is_tray:
-            # For trays just rename via the tray name composite (no U change allowed)
-            pass
-        else:
-            # Check if new U height fits without collision
-            if new_u != slot.u_height:
-                end_u = slot.position_u + new_u - 1
-                if end_u > self.rack.u_size:
-                    MsgBox.warn(self, "No space",
-                                f"U height {new_u} exceeds rack size at position {slot.position_u}.")
-                    return
-                others = [s for s in self.rack.slots if s.id != slot.id and s.bay == slot.bay]
-                for test_u in range(slot.position_u, slot.position_u + new_u):
-                    for s in others:
-                        if s.position_u <= test_u < s.position_u + s.u_height:
-                            MsgBox.warn(self, "No space",
-                                        f"U height {new_u} would overlap '{s.name}'.")
-                            return
-                slot.device_snapshot["u_height"] = new_u
-            slot.device_snapshot["name"] = new_name
+        # Check if new U height fits without collision
+        if new_u != slot.u_height:
+            end_u = slot.position_u + new_u - 1
+            if end_u > self.rack.u_size:
+                MsgBox.warn(self, "No space",
+                            f"U height {new_u} exceeds rack size at position {slot.position_u}.")
+                return
+            others = [s for s in self.rack.slots if s.id != slot.id and s.bay == slot.bay]
+            for test_u in range(slot.position_u, slot.position_u + new_u):
+                for s in others:
+                    if s.position_u <= test_u < s.position_u + s.u_height:
+                        MsgBox.warn(self, "No space",
+                                    f"U height {new_u} would overlap '{s.name}'.")
+                        return
+            slot.device_snapshot["u_height"] = new_u
+        slot.device_snapshot["name"] = new_name
         self.slot_moved.emit()
         self.update()
 

@@ -39,7 +39,7 @@ PRELOADED_DEVICES = [
     DeviceDefinition(
         name="Disguise GX 3",
         manufacturer="Disguise",
-        model="GX 3+",
+        model="GX 3",
         description="Server Disguise GX Range 3x VFC out",
         category="Video",
         u_height=4,
@@ -208,7 +208,7 @@ PRELOADED_DEVICES = [
     DeviceDefinition(
         name="Barco E2",
         manufacturer="Barco",
-        model="E2 Gen 2",
+        model="E2",
         description="Barco Event Master E2 First gen Multi-Screen Switcher",
         category="Video",
         u_height=4,
@@ -964,7 +964,7 @@ PRELOADED_DEVICES = [
         u_height=1,
         rack_native=True,
         width_mm=438.0,
-        depth_mm=43.2,
+        depth_mm=438.0,
         weight_kg=14.64,
     ),
     DeviceDefinition(
@@ -1216,7 +1216,7 @@ PRELOADED_DEVICES = [
         u_height=1,
         rack_native=True,
         width_mm=420.0,
-        depth_mm=15.4,
+        depth_mm=170.0,
         watts=45,
         weight_kg=2.30,
     ),
@@ -1570,14 +1570,38 @@ PRELOADED_DEVICES = [
 
 
 # Custom categories not in DEFAULT_CATEGORIES
-_EXTRA_CATEGORIES = ["Lighting"]
+_EXTRA_CATEGORIES = []
 
 
-def seed_library_if_empty():
-    """Populate library with preloaded devices only if library is empty."""
-    existing = storage.load_library()
-    if existing:
-        return
+def seed_library_if_empty() -> dict:
+    """
+    Populate library with preloaded devices only if library is empty.
+
+    Also checks (and reports back) whether library.json and/or
+    custom_categories.json were found corrupt on this run — storage.py
+    quarantines a corrupt file (renames it aside, never deletes it) and
+    reports [] as if the file were legitimately empty, which is what
+    triggers reseeding here. Returns a dict describing what happened so
+    main.py can show a one-time "your library was reset" notice after the
+    main window is visible, distinguishing that from a silent genuine
+    first-run seed:
+        {"library_corrupt": bool, "library_backup": str|None,
+         "categories_corrupt": bool, "categories_backup": str|None}
+    """
+    lib_result = storage.load_library()
+    cats_result = storage.load_custom_categories()
+
+    info = {
+        "library_corrupt": lib_result.was_corrupt,
+        "library_backup": lib_result.backup_path,
+        "categories_corrupt": cats_result.was_corrupt,
+        "categories_backup": cats_result.backup_path,
+    }
+
+    if lib_result.items:
+        return info
+
     for cat in _EXTRA_CATEGORIES:
         storage.add_custom_category(cat)
     storage.save_library(PRELOADED_DEVICES)
+    return info

@@ -7,7 +7,10 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPixmap
-from app.models import (DeviceDefinition, DEFAULT_CATEGORIES, category_color)
+from app.models import (
+    DeviceDefinition, DEFAULT_CATEGORIES, category_color,
+    IMAGE_WIDTH_PX, IMAGE_U_HEIGHT_PX,
+)
 from app import storage
 from app.style import BG2, BG3, BG4, ACCENT, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED, DANGER, FONT_BODY
 
@@ -251,6 +254,8 @@ class DeviceForm(QWidget):
             except ValueError:
                 self._u_height_val = max(1, min(20, self._u_height_val))
             self._u_height_lbl.setText(str(self._u_height_val))
+            self.img_front.update_u_height(self._u_height_val)
+            self.img_rear.update_u_height(self._u_height_val)
 
         self._u_height_lbl.editingFinished.connect(_u_commit)
 
@@ -277,10 +282,14 @@ class DeviceForm(QWidget):
         def _u_up():
             self._u_height_val = min(20, self._u_height_val + 1)
             self._u_height_lbl.setText(str(self._u_height_val))
+            self.img_front.update_u_height(self._u_height_val)
+            self.img_rear.update_u_height(self._u_height_val)
 
         def _u_dn():
             self._u_height_val = max(1, self._u_height_val - 1)
             self._u_height_lbl.setText(str(self._u_height_val))
+            self.img_front.update_u_height(self._u_height_val)
+            self.img_rear.update_u_height(self._u_height_val)
 
         u_up.clicked.connect(_u_up)
         u_dn.clicked.connect(_u_dn)
@@ -299,17 +308,6 @@ class DeviceForm(QWidget):
             QCheckBox::indicator:checked {{ background:{ACCENT}; border:1px solid {ACCENT}; }}
         """)
         self.rack_native_chk.stateChanged.connect(self._on_rack_native_changed)
-
-        # ── Color ─────────────────────────────────────────────────────────────
-        color_row = QHBoxLayout()
-        self.color_btn = ColorButton()
-        clear_col = QPushButton("Use category color")
-        clear_col.setStyleSheet(
-            f"background:{BG3}; color:{TEXT_MUTED}; border:1px solid {BG4}; border-radius:3px; font-size:10px; padding:4px 8px;")
-        clear_col.clicked.connect(self.color_btn.clear_color)
-        color_row.addWidget(self.color_btn)
-        color_row.addWidget(clear_col)
-        color_row.addStretch()
 
         # ── Spinner helper ────────────────────────────────────────────────────
         def _make_spin_widget(default_val, decimals=1, max_val=99999):
@@ -407,7 +405,14 @@ class DeviceForm(QWidget):
                     return val_holder[0]
 
             def _set_value(v):
-                val_holder[0] = float(v) if v else 0.0
+                # Same clamp _commit() applies to manually-typed/arrow-stepped
+                # values — without it, DeviceForm.load() populating this field
+                # via .setValue() let an out-of-range stored value (e.g. from
+                # unclamped CSV import, or old data) round-trip untouched
+                # through load()+collect() indefinitely (task.md #31).
+                v = float(v) if v else 0.0
+                v = max(0.0, min(float(max_val), v))
+                val_holder[0] = round(v, decimals)
                 edit.setText(_val_to_text(val_holder[0]))
 
             container.value = _get_value
@@ -469,8 +474,15 @@ class DeviceForm(QWidget):
         self.notes_edit = QTextEdit()
         self.notes_edit.setMaximumHeight(60)
 
-        self.img_front = None
-        self.img_rear  = None
+        self.img_front = ImagePickerWidget(label="Front", u_height=self._u_height_val)
+        self.img_rear  = ImagePickerWidget(label="Rear",  u_height=self._u_height_val)
+        images_row = QWidget()
+        images_row.setStyleSheet("background:transparent;")
+        images_layout = QHBoxLayout(images_row)
+        images_layout.setContentsMargins(0, 0, 0, 0)
+        images_layout.setSpacing(16)
+        images_layout.addWidget(self.img_front)
+        images_layout.addWidget(self.img_rear)
 
         def sep():
             f = QFrame(); f.setFrameShape(QFrame.Shape.HLine)
@@ -490,6 +502,7 @@ class DeviceForm(QWidget):
         layout.addRow(sep())
         layout.addRow("Power (W)",      _watts_row)
         layout.addRow("Weight (kg)",    _weight_row)
+        layout.addRow("Images",         images_row)
         layout.addRow("Notes",          self.notes_edit)
 
         # Initial state
@@ -500,6 +513,12 @@ class DeviceForm(QWidget):
     def _on_rack_native_changed(self):
         native = self.rack_native_chk.isChecked()
         self.height_mm_spin.setEnabled(not native)
+        if native:
+            # Disabling the field alone leaves its stale typed value sitting
+            # in val_holder — collect() reads .value() regardless of enabled
+            # state, so a height typed while non-rack-native survived
+            # untouched through a rack_native re-check + save (task.md #29).
+            self.height_mm_spin.setValue(0)
 
     def _on_u_changed(self, u):
         pass
@@ -513,6 +532,15 @@ class DeviceForm(QWidget):
         self.description_edit.setPlainText(getattr(device, 'description', ''))
         self.category_combo.reload()
         idx = self.category_combo.findText(device.category)
+        if idx < 0 and device.category:
+            # Unrecognized category (e.g. from a JSON import predating this
+            # device's category, or a custom category since deleted) — register
+            # it instead of silently falling back to whatever the combo
+            # defaults to (task.md #30), so the real value is shown and a
+            # no-op save doesn't overwrite it.
+            storage.register_category_if_unknown(device.category)
+            self.category_combo.reload()
+            idx = self.category_combo.findText(device.category)
         if idx >= 0:
             self.category_combo.setCurrentIndex(idx)
         self.color_btn.set_color(device.color)
@@ -520,7 +548,11 @@ class DeviceForm(QWidget):
         self.weight_spin.setValue(device.weight_kg if device.weight_kg is not None else 0)
         self.notes_edit.setPlainText(device.notes)
 
-        self._u_height_val = device.u_height
+        # Same [1,20] clamp _u_commit()/_u_up()/_u_dn() already enforce on
+        # manual edits — without it, an out-of-range stored u_height (e.g.
+        # from unclamped CSV import) round-tripped through load()+collect()
+        # untouched (task.md #31).
+        self._u_height_val = max(1, min(20, device.u_height))
         self._u_height_lbl.setText(str(self._u_height_val))
 
         self.rack_native_chk.setChecked(device.rack_native)
@@ -528,6 +560,11 @@ class DeviceForm(QWidget):
         self.height_mm_spin.setValue(device.height_mm if device.height_mm is not None else 0)
         self.depth_mm_spin.setValue(device.depth_mm if device.depth_mm is not None else 0)
         self._on_rack_native_changed()
+
+        self.img_front.update_u_height(self._u_height_val)
+        self.img_rear.update_u_height(self._u_height_val)
+        self.img_front.set_b64(device.image_front)
+        self.img_rear.set_b64(device.image_rear)
 
     def collect(self) -> dict:
         return {
@@ -545,6 +582,6 @@ class DeviceForm(QWidget):
             "watts":        self.watts_spin.value()      if self.watts_spin.value()      > 0 else None,
             "weight_kg":    self.weight_spin.value()     if self.weight_spin.value()     > 0 else None,
             "notes":        self.notes_edit.toPlainText().strip(),
-            "image_front":  "",
-            "image_rear":   "",
+            "image_front":  self.img_front.get_b64(),
+            "image_rear":   self.img_rear.get_b64(),
         }

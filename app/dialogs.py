@@ -35,6 +35,9 @@ class _MsgDialog(QDialog):
         buttons: list of (label, role)
             role in: "accept", "reject", "cancel", "danger"
         """
+        title = str(title)
+        message = str(message)
+
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setModal(True)
