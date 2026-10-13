@@ -1,0 +1,14 @@
+# Build output / generated
+dist/
+build/
+__pycache__/
+*.pyc
+installer_output/
+
+# Local archive of older versions (kept on disk, history lives in git)
+RarckDesigner History/
+RackDesigner_v0.1.19/
+
+# Local tooling
+.claude/settings.local.json
+.venv/
