@@ -12,3 +12,7 @@ RackDesigner_v0.1.19/
 # Local tooling
 .claude/settings.local.json
 .venv/
+.venv-build/
+release/
+build21.log
+exe_contents.txt

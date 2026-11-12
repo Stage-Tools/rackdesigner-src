@@ -5,6 +5,26 @@ as-is in `Changelog.txt` (kept as the historical archive, not duplicated
 here). This file continues from that point forward and is the one to keep
 updated going forward, one entry per confirmed operation.
 
+## v0.1.21 (2026-11-12)
+
+First open-source release: licensed under the GNU AGPL v3 or later.
+
+### Added
+- `LICENSE` (GNU AGPL v3), AGPL-3.0-or-later header in every source file, `README.md`
+- About screen: copyright, "ABSOLUTELY NO WARRANTY", AGPL notice, source repository link
+- `LICENSE` and `THIRD-PARTY-NOTICES.txt` installed in the program folder; the installer shows the AGPL
+- User manual: new "Licence" section
+
+### Changed
+- Clean build from a dedicated virtual environment (PyQt6 6.11.0, reportlab 4.4.10,
+  PyMuPDF 1.28.0); numpy and psutil are no longer bundled; PyMuPDF dev headers/libs excluded
+- No portable build is distributed any more
+
+### Note on tags
+Tags `v0.1.17` to `v0.1.20` are **reconstructed** from archived source folders of the
+original builds (branch `reconstructed-releases`); they are not the original development
+commits. No installer script (`.iss`) was archived for 0.1.17-0.1.19. Tag `v0.1.21` is on `main`.
+
 ## v0.1.19 (addendum — retroactively logged 2026-07-24)
 
 `Changelog.txt` stays frozen (not edited directly). These items belong to
