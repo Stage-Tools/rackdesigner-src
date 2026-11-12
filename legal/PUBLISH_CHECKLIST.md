@@ -4,21 +4,22 @@ Status when written (2026-11-12): everything below is **local only**. Nothing ha
 made public, released, deleted or edited on GitHub or on the website.
 
 Repos involved
-- `Stage-Tools/rackdesigner-src` - source repo, currently **private**; remote `main` = `ee3024e`.
+- `Stage-Tools/rackdesigner-src` - source repo, currently **private**; remote `main` = `ee3024e` (old, Gmail address; to be replaced by the force-push in step 0).
 - `Stage-Tools/RackDesigner` - public download repo (README only + releases v0.1.18-v0.1.20).
 - `Stage-Tools/stagetools` - website (GitHub Pages).
 
-Local state to publish (commits already use the GitHub noreply address)
+Local state to publish (ALL commits, including the root commit, use the GitHub noreply address;
+history was rebuilt on 2026-11-12, so these hashes replace every earlier one)
 
 | Ref | Commit | Notes |
 |---|---|---|
-| `main` | `3c184bd` + this checklist commit | 0.1.21 release commit (tagged) then the checklist; on top of `ee3024e`, so the push is a fast-forward |
+| `main` | tip = latest checklist commit (after `6dc74af`) | root `e5922ab` (rewritten import commit), then `6dc74af` (0.1.21, tagged), then checklist commits. **Not** a descendant of the remote's `ee3024e`: needs a force-push |
 | `reconstructed-releases` | `99d954f` | orphan branch, 4 commits, one per version |
 | `v0.1.17` | `c983b93` | reconstructed |
 | `v0.1.18` | `a230e3e` | reconstructed |
 | `v0.1.19` | `4f895fd` | reconstructed |
 | `v0.1.20` | `99d954f` | reconstructed |
-| `v0.1.21` | `3c184bd` | on `main` |
+| `v0.1.21` | `6dc74af` | on `main` |
 
 Local release files in `release/v0.1.21/` (gitignored), SHA-256:
 - `RackDesigner_v0.1.21_Setup.exe` `3120d25e174ce13715cc4b5c76846f3a995570c059181a2f5cfbad64e068a690`
@@ -26,19 +27,32 @@ Local release files in `release/v0.1.21/` (gitignored), SHA-256:
 - `RackDesigner_v0.1.21_UserManual.pdf` `14364224afc7cc52ab2625d574b90be7a76727c1e3a640ccc3927bcb83c218fc`
 - `legal/THIRD-PARTY-NOTICES.txt` (inside the Setup, verified) `8461da684c44a8abe2050cd16042fd10f5a5d5bff8cbc301a0e311f74bbabe22`
 
-## 0. Before the first push - one thing to decide
-Commit `ee3024e` (already on the private remote) has the author/committer email
-the Gmail address. It will become **public** when the repo is made public.
-The five new commits use the noreply address and are fine.
-- Accept it (the address is then public), or
-- rewrite `ee3024e` to the noreply address first. That changes every commit hash, so it needs a
-  **force push** of `main` while the repo is still private, and the five local commits must be
-  rewritten again on top. Do this *before* making the repo public.
+## 0. Force-push main to rackdesigner-src while it is still private
+Force-push `main` to rackdesigner-src while it is still private, then verify that no commit in
+any branch or tag contains the Gmail address (`git log --all --format='%ae %ce'`), only then
+make the repo public.
+
+Why: the remote's current `main` (`ee3024e`) carries the Gmail address. The local
+history was rewritten (root commit included) to the noreply address, so it no longer descends
+from `ee3024e` and a plain push is rejected.
+
+1. `git push --force-with-lease=main:ee3024ec1446b3d5e24606595daebd4e441ef8cb origin main`
+   (replaces remote `main`; the lease makes it fail if anything else changed on the remote).
+2. `git push origin reconstructed-releases v0.1.17 v0.1.18 v0.1.19 v0.1.20 v0.1.21`
+3. Verify on the **remote**: `git fetch origin --prune`, then
+   `git log --all --format='%ae %ce' | sort -u` must print only
+   `276313541+NessiRiccardo@users.noreply.github.com 276313541+NessiRiccardo@users.noreply.github.com`.
+   `git fetch` keeps the old `ee3024e` only in your local reflog/object store, not on GitHub;
+   if `git log --all` still lists it, run `git reflog expire --expire=now --all && git gc --prune=now`
+   and check again. Also check that GitHub no longer serves `ee3024e`:
+   `gh api repos/Stage-Tools/rackdesigner-src/commits/ee3024e` should fail or show it only as
+   an unreachable object. If it is still fetchable by hash, contact GitHub Support to purge it
+   before going public (force-pushed commits can stay reachable by SHA on GitHub).
+4. Only when all of this is clean, go on to step 1 and make the repo public.
 
 ## 1. rackdesigner-src: push, then make public
-1. `git push origin main reconstructed-releases v0.1.17 v0.1.18 v0.1.19 v0.1.20 v0.1.21`
-   (GH007 no longer applies: all new commits use the noreply address).
-2. Check on GitHub: `main` at `3c184bd`, branch `reconstructed-releases`, 5 tags.
+1. (Pushes are done in step 0.)
+2. Check on GitHub: `main` at the local tip, branch `reconstructed-releases`, 5 tags.
 3. Make the repo **public** (Settings > General > Danger Zone > Change visibility).
    Before that, re-check `legal/BRIEF_LICENSING.md` and `docs/` are fine to publish (they are
    committed).
